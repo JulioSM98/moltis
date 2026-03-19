@@ -255,7 +255,11 @@ jobs:
 
   build-deb:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     strategy:
       matrix:
         include:
@@ -349,7 +353,11 @@ jobs:
 
   build-rpm:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     strategy:
       matrix:
         include:
@@ -438,7 +446,11 @@ jobs:
 
   build-arch:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     strategy:
       matrix:
         include:
@@ -548,7 +560,11 @@ jobs:
 
   build-appimage:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     strategy:
       matrix:
         include:
@@ -681,7 +697,11 @@ jobs:
 
   build-snap:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     runs-on: ubuntu-latest
     name: Build Snap
     permissions:
@@ -736,7 +756,11 @@ jobs:
 
   build-homebrew-binaries:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     strategy:
       matrix:
         include:
@@ -838,7 +862,11 @@ jobs:
 
   build-macos-app:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     runs-on: macos-latest
     name: Build macOS app
     permissions:
@@ -927,7 +955,11 @@ jobs:
 
   build-windows-exe:
     needs: [clippy, test, e2e]
-    if: ${{ always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    if: >-
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     runs-on: windows-latest
     name: Build .exe (x86_64)
     permissions:
@@ -1017,8 +1049,13 @@ jobs:
             *.exe.crt
 
   build-docker:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && always() && (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') && (needs.test.result == 'success' || needs.test.result == 'skipped') && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
     needs: [clippy, test, e2e]
+    if: >-
+      !(github.event_name == 'workflow_dispatch' && inputs.dry_run) &&
+      always() &&
+      (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
+      (needs.test.result  == 'success' || needs.test.result  == 'skipped') &&
+      (needs.e2e.result   == 'success' || needs.e2e.result   == 'skipped')
     strategy:
       matrix:
         include:
