@@ -15,7 +15,7 @@ MCP is an open protocol that lets AI assistants connect to external tools and da
 | Transport | Description | Use Case |
 |-----------|-------------|----------|
 | **stdio** | Local process via stdin/stdout | npm packages, local scripts |
-| **HTTP/SSE** | Remote server via HTTP | Cloud services, shared servers |
+| **Streamable HTTP** | Remote server via HTTP | Cloud services, shared servers |
 
 ## Adding an MCP Server
 
@@ -23,30 +23,32 @@ MCP is an open protocol that lets AI assistants connect to external tools and da
 
 1. Go to **Settings** → **MCP Servers**
 2. Click **Add Server**
-3. Enter the server configuration
+3. For remote Streamable HTTP servers, enter the server URL and any optional request headers
 4. Click **Save**
+
+After saving a remote server, Moltis only shows a sanitized URL plus header names/count in the UI and status views. Stored header values stay hidden.
 
 ### Via Configuration
 
 Add servers to `moltis.toml`:
 
 ```toml
-[[mcp.servers]]
-name = "filesystem"
+[mcp.servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects"]
 
-[[mcp.servers]]
-name = "github"
+[mcp.servers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { GITHUB_TOKEN = "ghp_..." }
 
-[[mcp.servers]]
-name = "remote-api"
-url = "https://mcp.example.com/sse"
+[mcp.servers.remote_api]
 transport = "sse"
+url = "https://mcp.example.com/mcp?api_key=$REMOTE_MCP_KEY"
+headers = { Authorization = "Bearer ${REMOTE_MCP_TOKEN}" }
 ```
+
+Remote URLs and headers support `$NAME` and `${NAME}` placeholders. For live remote servers, placeholder values resolve from Moltis-managed env overrides, either `[env]` in config or **Settings** → **Environment Variables**.
 
 ## Popular MCP Servers
 
@@ -68,21 +70,37 @@ Explore more at [mcp.so](https://mcp.so) and [GitHub MCP Servers](https://github
 ## Configuration Options
 
 ```toml
-[[mcp.servers]]
-name = "my-server"              # Display name
-command = "node"                # Command to run
-args = ["server.js"]            # Command arguments
-cwd = "/path/to/server"         # Working directory
+[mcp.servers.my_server]
+command = "node"                # Required for stdio transport
+args = ["server.js"]            # Optional arguments
 
-# Environment variables
+# Optional environment variables
 env = { API_KEY = "secret", DEBUG = "true" }
 
-# Health check settings
-health_check_interval = 30      # Seconds between health checks
-restart_on_failure = true       # Auto-restart on crash
-max_restart_attempts = 5        # Give up after N restarts
-restart_backoff = "exponential" # "linear" or "exponential"
+# Optional: remote transport
+transport = "sse"               # "stdio" (default) or "sse"
+url = "https://mcp.example.com/mcp"  # Required when transport = "sse"
+headers = { "x-api-key" = "$REMOTE_MCP_KEY" }  # Optional request headers
 ```
+
+## Remote SSE Secrets and Placeholders
+
+Remote MCP servers often expect API keys or bearer tokens in the URL query string or request headers. Moltis supports both patterns.
+
+```toml
+[mcp.servers.linear_remote]
+transport = "sse"
+url = "https://mcp.example.com/mcp?api_key=$REMOTE_MCP_KEY"
+headers = {
+  Authorization = "Bearer ${REMOTE_MCP_TOKEN}",
+  "x-workspace" = "team-a",
+}
+```
+
+- Use `$NAME` or `${NAME}` placeholders in remote `url` and `headers`
+- Placeholder values resolve from Moltis-managed env overrides, either `[env]` in config or **Settings** → **Environment Variables**
+- UI and API status payloads only expose sanitized URLs plus header names/count, not raw header values
+- Query-string secrets are redacted when Moltis displays a remote URL after save
 
 ## Server Lifecycle
 
@@ -169,11 +187,9 @@ await server.connect(transport);
 ### Configure in Moltis
 
 ```toml
-[[mcp.servers]]
-name = "my-server"
+[mcp.servers.my_server]
 command = "node"
 args = ["server.js"]
-cwd = "/path/to/my-server"
 ```
 
 ## Debugging
@@ -184,6 +200,7 @@ In the web UI, go to **Settings** → **MCP Servers** to see:
 
 - Connection status (connected/disconnected/error)
 - Available tools
+- Sanitized remote URL and configured header names
 - Recent errors
 
 ### View Logs
@@ -192,7 +209,7 @@ MCP server stderr is captured in Moltis logs:
 
 ```bash
 # View gateway logs
-tail -f ~/.moltis/logs/gateway.log | grep mcp
+tail -f ~/.moltis/logs.jsonl | grep -i mcp
 ```
 
 ### Test Locally
@@ -203,6 +220,41 @@ Run the server directly to debug:
 echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | node server.js
 ```
 
+## OAuth Authentication
+
+Remote MCP servers can require OAuth 2.1 authentication. Moltis handles this automatically — when a server returns `401 Unauthorized`, the OAuth flow starts without any manual configuration.
+
+### How It Works
+
+1. Moltis connects to the remote MCP server
+2. The server returns `401 Unauthorized` with a `WWW-Authenticate` header
+3. Moltis discovers the authorization server via [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) (Protected Resource Metadata)
+4. Moltis performs [dynamic client registration](https://www.rfc-editor.org/rfc/rfc7591) (RFC 7591)
+5. A PKCE authorization code flow opens your browser for login
+6. After login, tokens are stored and used for all subsequent requests
+
+Client registrations and tokens are cached locally, so you only need to log in once per server.
+
+### Manual OAuth Configuration
+
+If a server doesn't support standard OAuth discovery, you can configure credentials manually:
+
+```toml
+[mcp.servers.private_api]
+url = "https://mcp.example.com/mcp"
+transport = "sse"
+
+[mcp.servers.private_api.oauth]
+client_id = "your-client-id"
+auth_url = "https://auth.example.com/authorize"
+token_url = "https://auth.example.com/token"
+scopes = ["mcp:read", "mcp:write"]
+```
+
+### Re-authentication
+
+If your session expires or tokens are revoked, Moltis automatically re-authenticates on the next `401` response. You can also trigger re-authentication manually via the `mcp.reauth` RPC method.
+
 ## Security Considerations
 
 ```admonish warning
@@ -212,6 +264,7 @@ MCP servers run with the same permissions as Moltis. Only use servers from trust
 - **Review server code** before running
 - **Limit file access** — use specific paths, not `/`
 - **Use environment variables** for secrets
+- **Prefer placeholders** in remote URLs and headers (`$NAME` / `${NAME}`) instead of hardcoding secrets repeatedly
 - **Network isolation** — run untrusted servers in containers
 
 ## Troubleshooting

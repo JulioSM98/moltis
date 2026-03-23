@@ -8,8 +8,9 @@ use {
 };
 
 use moltis_protocol::{
-    ConnectParams, ErrorShape, EventFrame, Features, GatewayFrame, HANDSHAKE_TIMEOUT_MS, HelloAuth,
-    HelloOk, MAX_PAYLOAD_BYTES, PROTOCOL_VERSION, Policy, ResponseFrame, ServerInfo, error_codes,
+    ConnectParams, ConnectParamsV4, ErrorShape, EventFrame, Extensions, Features, GatewayFrame,
+    HANDSHAKE_TIMEOUT_MS, HelloAuth, HelloOk, KNOWN_EVENTS, MAX_PAYLOAD_BYTES, PROTOCOL_VERSION,
+    Policy, ResponseFrame, ServerInfo, error_codes, roles, scopes,
 };
 
 use crate::{
@@ -20,6 +21,14 @@ use crate::{
     state::{ConnectedClient, GatewayState},
 };
 
+fn top_level_param_keys(params: &Option<serde_json::Value>) -> Vec<String> {
+    params
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .map(|obj| obj.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// Handle a single WebSocket connection through its full lifecycle:
 /// handshake (with auth) → message loop → cleanup.
 pub async fn handle_connection(
@@ -28,13 +37,17 @@ pub async fn handle_connection(
     methods: Arc<MethodRegistry>,
     remote_addr: SocketAddr,
     accept_language: Option<String>,
+    remote_ip: Option<String>,
+    header_authenticated: bool,
+    is_local: bool,
 ) {
     let conn_id = uuid::Uuid::new_v4().to_string();
-    let remote_ip = remote_addr.ip().to_string();
-    info!(conn_id = %conn_id, remote_ip = %remote_ip, "ws: new connection");
+    let conn_remote_ip = remote_addr.ip().to_string();
+    info!(conn_id = %conn_id, remote_ip = %conn_remote_ip, "ws: new connection");
 
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (client_tx, mut client_rx) = mpsc::unbounded_channel::<String>();
+    // Bounded channel prevents unbounded memory growth from slow clients.
+    let (client_tx, mut client_rx) = mpsc::channel::<String>(512);
 
     // Spawn write loop: forwards frames from the client_tx channel to the WebSocket.
     let write_conn_id = conn_id.clone();
@@ -58,46 +71,106 @@ pub async fn handle_connection(
         Ok(Ok(result)) => result,
         Ok(Err(e)) => {
             warn!(conn_id = %conn_id, error = %e, "ws: handshake failed");
-            drop(client_tx);
-            write_handle.abort();
+            graceful_writer_shutdown(client_tx, write_handle).await;
             return;
         },
         Err(_) => {
             warn!(conn_id = %conn_id, "ws: handshake timeout");
-            drop(client_tx);
-            write_handle.abort();
+            graceful_writer_shutdown(client_tx, write_handle).await;
             return;
         },
     };
 
-    let (request_id, params) = connect_result;
+    let ConnectResult {
+        request_id,
+        params,
+        is_v4,
+    } = connect_result;
+
+    if state.ws_request_logs {
+        let connect_param_keys = serde_json::to_value(&params)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .map(|obj| obj.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        info!(
+            conn_id = %conn_id,
+            request_id = %request_id,
+            method = "connect",
+            param_keys = ?connect_param_keys,
+            "ws: received request frame"
+        );
+    }
 
     // Validate protocol version.
     if params.min_protocol > PROTOCOL_VERSION || params.max_protocol < PROTOCOL_VERSION {
+        warn!(
+            conn_id = %conn_id,
+            min_protocol = params.min_protocol,
+            max_protocol = params.max_protocol,
+            server_protocol = PROTOCOL_VERSION,
+            "ws: protocol mismatch"
+        );
         let err = ResponseFrame::err(
             &request_id,
             ErrorShape::new(
-                error_codes::INVALID_REQUEST,
+                error_codes::PROTOCOL_ERROR,
                 format!(
                     "protocol mismatch: server={}, client={}-{}",
                     PROTOCOL_VERSION, params.min_protocol, params.max_protocol
                 ),
             ),
         );
-        let _ = client_tx.send(serde_json::to_string(&err).unwrap());
-        drop(client_tx);
-        write_handle.abort();
+        #[allow(clippy::unwrap_used)] // serializing known-valid struct
+        let _ = client_tx.try_send(serde_json::to_string(&err).unwrap());
+        graceful_writer_shutdown(client_tx, write_handle).await;
         return;
     }
 
     // ── Auth validation ──────────────────────────────────────────────────
-    let is_loopback = auth::is_loopback(&remote_ip);
-
-    // Try credential-store auth first (API key, password hash), then fall
-    // back to legacy env-var auth.
-    let mut authenticated = is_loopback;
+    // SECURITY: Three-tier auth model (see docs/src/security.md):
+    //
+    // 1. Password set → always require credentials, any IP.
+    // 2. No password + genuine local connection → full access (dev convenience).
+    // 3. No password + remote/proxied → onboarding only.
+    //
+    // `is_local` is computed per-request by `is_local_connection()` using:
+    //   - MOLTIS_BEHIND_PROXY env var (hard override)
+    //   - Proxy header detection (X-Forwarded-For, X-Real-IP, etc.)
+    //   - Host header loopback check
+    //   - TCP source IP loopback check
+    //
+    // See CVE-2026-25253 for the analogous OpenClaw vulnerability.
+    let mut authenticated = header_authenticated;
     // Scopes from API key verification (if any).
     let mut api_key_scopes: Option<Vec<String>> = None;
+    // Device token verification result (if any).
+    let mut device_token_device_id: Option<String> = None;
+
+    // Check device token first (used by paired nodes).
+    if !authenticated
+        && let Some(ref dt) = params.auth.as_ref().and_then(|a| a.device_token.clone())
+        && let Some(ref store) = state.pairing_store
+    {
+        match store.verify_device_token(dt).await {
+            Ok(Some(verification)) => {
+                authenticated = true;
+                api_key_scopes = Some(verification.scopes.clone());
+                device_token_device_id = Some(verification.device_id.clone());
+                info!(
+                    conn_id = %conn_id,
+                    device_id = %verification.device_id,
+                    "ws: authenticated via device token"
+                );
+            },
+            Ok(None) => {
+                debug!(conn_id = %conn_id, "ws: device token not found or revoked");
+            },
+            Err(e) => {
+                debug!(conn_id = %conn_id, error = %e, "ws: device token verification failed");
+            },
+        }
+    }
 
     if !authenticated && let Some(ref cred_store) = state.credential_store {
         if cred_store.is_setup_complete() {
@@ -106,7 +179,7 @@ pub async fn handle_connection(
                 && let Ok(Some(verification)) = cred_store.verify_api_key(api_key).await
             {
                 authenticated = true;
-                // Store the scopes from the API key (empty = full access)
+                // Store the scopes from the API key (empty = no access)
                 api_key_scopes = Some(verification.scopes);
             }
             // Check password against DB hash.
@@ -117,8 +190,11 @@ pub async fn handle_connection(
                 authenticated = true;
             }
         } else {
-            // Setup not complete yet — allow all connections.
-            authenticated = true;
+            // Setup not complete yet — only allow local connections.
+            // Remote connections must go through the onboarding/setup flow.
+            if is_local {
+                authenticated = true;
+            }
         }
     }
 
@@ -132,7 +208,7 @@ pub async fn handle_connection(
                 &state.auth,
                 provided_token,
                 provided_password,
-                Some(&remote_ip),
+                Some(&conn_remote_ip),
             );
             if auth_result.ok {
                 authenticated = true;
@@ -144,31 +220,83 @@ pub async fn handle_connection(
     }
 
     if !authenticated {
-        warn!(conn_id = %conn_id, "ws: auth failed");
+        let setup_complete = state
+            .credential_store
+            .as_ref()
+            .is_some_and(|store| store.is_setup_complete());
+        let has_api_key = params
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.api_key.as_ref())
+            .is_some();
+        let has_password = params
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.password.as_ref())
+            .is_some();
+        let has_token = params
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.token.as_ref())
+            .is_some();
+        warn!(
+            conn_id = %conn_id,
+            is_local,
+            header_authenticated,
+            setup_complete,
+            has_api_key,
+            has_password,
+            has_token,
+            "ws: auth failed"
+        );
         let err = ResponseFrame::err(
             &request_id,
-            ErrorShape::new(error_codes::INVALID_REQUEST, "authentication failed"),
+            ErrorShape::new(error_codes::UNAUTHORIZED, "authentication failed"),
         );
-        let _ = client_tx.send(serde_json::to_string(&err).unwrap());
-        drop(client_tx);
-        write_handle.abort();
+        #[allow(clippy::unwrap_used)] // serializing known-valid struct
+        let _ = client_tx.try_send(serde_json::to_string(&err).unwrap());
+        graceful_writer_shutdown(client_tx, write_handle).await;
         return;
     }
 
-    let role = params.role.clone().unwrap_or_else(|| "operator".into());
+    // Device-token-authenticated connections default to "node" role.
+    let role = if device_token_device_id.is_some() {
+        params.role.clone().unwrap_or_else(|| roles::NODE.into())
+    } else {
+        params
+            .role
+            .clone()
+            .unwrap_or_else(|| roles::OPERATOR.into())
+    };
 
-    // Determine scopes: use API key scopes if provided, otherwise default to full access.
-    // Empty API key scopes means full access (backward compatibility).
+    // Determine scopes based on auth method.
+    // API keys MUST declare scopes explicitly — empty scopes means no access.
+    // Non-API-key auth (password, local, legacy) gets full access.
     let scopes = match api_key_scopes {
         Some(key_scopes) if !key_scopes.is_empty() => key_scopes,
-        _ => {
-            // Full access: either no API key used, or API key has no scope restrictions
+        Some(_empty) => {
+            // API key with no scopes → reject (least-privilege).
+            warn!(conn_id = %conn_id, "ws: API key has no scopes, denying access");
+            let err = ResponseFrame::err(
+                &request_id,
+                ErrorShape::new(
+                    error_codes::FORBIDDEN,
+                    "API key has no scopes — specify at least one scope when creating the key",
+                ),
+            );
+            #[allow(clippy::unwrap_used)] // serializing known-valid struct
+            let _ = client_tx.try_send(serde_json::to_string(&err).unwrap());
+            graceful_writer_shutdown(client_tx, write_handle).await;
+            return;
+        },
+        None => {
+            // Non-API-key auth (password, local, legacy) → full access.
             vec![
-                "operator.admin".into(),
-                "operator.read".into(),
-                "operator.write".into(),
-                "operator.approvals".into(),
-                "operator.pairing".into(),
+                scopes::ADMIN.into(),
+                scopes::READ.into(),
+                scopes::WRITE.into(),
+                scopes::APPROVALS.into(),
+                scopes::PAIRING.into(),
             ]
         },
     };
@@ -197,29 +325,19 @@ pub async fn handle_connection(
         },
         features: Features {
             methods: methods.method_names(),
-            events: vec![
-                "tick".into(),
-                "shutdown".into(),
-                "agent".into(),
-                "chat".into(),
-                "presence".into(),
-                "health".into(),
-                "exec.approval.requested".into(),
-                "exec.approval.resolved".into(),
-                "device.pair.requested".into(),
-                "device.pair.resolved".into(),
-                "node.pair.requested".into(),
-                "node.pair.resolved".into(),
-                "node.invoke.request".into(),
-            ],
+            events: KNOWN_EVENTS.iter().map(|s| (*s).into()).collect(),
         },
         snapshot: serde_json::json!({}),
         canvas_host_url: None,
         auth: Some(hello_auth),
-        policy: Policy::default_policy(),
+        policy: Policy::default(),
+        extensions: Extensions::new(),
     };
-    let resp = ResponseFrame::ok(&request_id, serde_json::to_value(&hello).unwrap());
-    let _ = client_tx.send(serde_json::to_string(&resp).unwrap());
+    #[allow(clippy::unwrap_used)] // serializing known-valid struct
+    let hello_val = serde_json::to_value(&hello).unwrap();
+    let resp = ResponseFrame::ok(&request_id, hello_val);
+    #[allow(clippy::unwrap_used)] // serializing known-valid struct
+    let _ = client_tx.try_send(serde_json::to_string(&resp).unwrap());
 
     info!(
         conn_id = %conn_id,
@@ -234,6 +352,36 @@ pub async fn handle_connection(
     let mut resolved_params = params.clone();
     resolved_params.scopes = Some(scopes.clone());
     resolved_params.role = Some(role.clone());
+    let browser_timezone = params.timezone.clone();
+
+    // Auto-persist browser timezone to USER.md on first connect (one-time).
+    if let Some(ref tz_str) = browser_timezone
+        && let Ok(tz) = tz_str.parse::<chrono_tz::Tz>()
+    {
+        let existing_user = moltis_config::load_user();
+        if existing_user
+            .as_ref()
+            .and_then(|u| u.timezone.as_ref())
+            .is_none()
+        {
+            let mut user = existing_user.unwrap_or_default();
+            user.timezone = Some(moltis_config::Timezone::from(tz));
+            if let Err(e) = moltis_config::save_user(&user) {
+                warn!(conn_id = %conn_id, error = %e, "ws: failed to auto-persist timezone");
+            } else {
+                info!(conn_id = %conn_id, timezone = %tz_str, "ws: auto-persisted browser timezone to USER.md");
+            }
+        }
+    }
+
+    // v3 clients default to wildcard subscriptions (all events).
+    // v4 clients default to empty subscriptions (must explicitly subscribe).
+    let subscriptions = if is_v4 {
+        Some(std::collections::HashSet::new())
+    } else {
+        None
+    };
+
     let client = ConnectedClient {
         conn_id: conn_id.clone(),
         connect_params: resolved_params,
@@ -241,11 +389,22 @@ pub async fn handle_connection(
         connected_at: now,
         last_activity: now,
         accept_language,
+        remote_ip,
+        timezone: browser_timezone,
+        subscriptions,
+        joined_channels: std::collections::HashSet::new(),
+        negotiated_protocol: PROTOCOL_VERSION,
     };
     state.register_client(client).await;
 
+    #[cfg(feature = "metrics")]
+    {
+        moltis_metrics::counter!(moltis_metrics::websocket::CONNECTIONS_TOTAL).increment(1);
+        moltis_metrics::gauge!(moltis_metrics::websocket::CONNECTIONS_ACTIVE).increment(1.0);
+    }
+
     // If node role, register in node registry.
-    if role == "node" {
+    if role == roles::NODE {
         let caps = params.caps.clone().unwrap_or_default();
         let commands = params.commands.clone().unwrap_or_default();
         let permissions: HashMap<String, bool> = params
@@ -268,10 +427,24 @@ pub async fn handle_connection(
             commands,
             permissions,
             path_env: params.path_env.clone(),
-            remote_ip: Some(remote_ip.clone()),
+            remote_ip: Some(conn_remote_ip.clone()),
             connected_at: now,
+            mem_total: None,
+            mem_available: None,
+            cpu_count: None,
+            cpu_usage: None,
+            uptime_secs: None,
+            services: Vec::new(),
+            last_telemetry: None,
+            disk_total: None,
+            disk_available: None,
+            runtimes: Vec::new(),
+            providers: Vec::new(),
         };
-        state.nodes.write().await.register(node);
+        state.inner.write().await.nodes.register(node);
+        state
+            .node_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         info!(conn_id = %conn_id, node_id = %params.client.id, "node registered");
 
         // Broadcast presence change.
@@ -286,6 +459,29 @@ pub async fn handle_connection(
             BroadcastOpts::default(),
         )
         .await;
+
+        // Query provider discovery in the background (best-effort).
+        if params
+            .commands
+            .as_ref()
+            .is_some_and(|cmds| cmds.iter().any(|c| c == "system.providers"))
+        {
+            let prov_state = Arc::clone(&state);
+            let prov_node_id = params.client.id.clone();
+            tokio::spawn(async move {
+                match crate::node_exec::query_node_providers(&prov_state, &prov_node_id).await {
+                    Ok(providers) => {
+                        let mut inner = prov_state.inner.write().await;
+                        if let Some(n) = inner.nodes.get_mut(&prov_node_id) {
+                            n.providers = providers;
+                        }
+                    },
+                    Err(e) => {
+                        debug!(node_id = %prov_node_id, error = %e, "provider discovery failed")
+                    },
+                }
+            });
+        }
     }
 
     // ── Message loop ─────────────────────────────────────────────────────
@@ -306,10 +502,11 @@ pub async fn handle_connection(
             warn!(conn_id = %conn_id, size = text.len(), "ws: payload too large");
             let err = EventFrame::new(
                 "error",
-                serde_json::json!({ "message": "payload too large", "maxBytes": MAX_PAYLOAD_BYTES }),
+                serde_json::json!({ "code": error_codes::PAYLOAD_TOO_LARGE, "message": "payload too large", "maxBytes": MAX_PAYLOAD_BYTES }),
                 state.next_seq(),
             );
-            let _ = client_tx.send(serde_json::to_string(&err).unwrap());
+            #[allow(clippy::unwrap_used)] // serializing known-valid struct
+            let _ = client_tx.try_send(serde_json::to_string(&err).unwrap());
             continue;
         }
 
@@ -322,18 +519,28 @@ pub async fn handle_connection(
                     serde_json::json!({ "message": "invalid frame" }),
                     state.next_seq(),
                 );
-                let _ = client_tx.send(serde_json::to_string(&err).unwrap());
+                #[allow(clippy::unwrap_used)] // serializing known-valid struct
+                let _ = client_tx.try_send(serde_json::to_string(&err).unwrap());
                 continue;
             },
         };
 
         // Touch activity timestamp.
-        if let Some(client) = state.clients.write().await.get_mut(&conn_id) {
+        if let Some(client) = state.inner.write().await.clients.get_mut(&conn_id) {
             client.touch();
         }
 
         match frame {
             GatewayFrame::Request(req) => {
+                if state.ws_request_logs {
+                    info!(
+                        conn_id = %conn_id,
+                        request_id = %req.id,
+                        method = %req.method,
+                        param_keys = ?top_level_param_keys(&req.params),
+                        "ws: received request frame"
+                    );
+                }
                 let ctx = MethodContext {
                     request_id: req.id.clone(),
                     method: req.method.clone(),
@@ -342,9 +549,44 @@ pub async fn handle_connection(
                     client_role: role.clone(),
                     client_scopes: scopes.clone(),
                     state: Arc::clone(&state),
+                    channel: req.channel,
                 };
                 let response = methods.dispatch(ctx).await;
-                let _ = client_tx.send(serde_json::to_string(&response).unwrap());
+                if state.ws_request_logs {
+                    info!(
+                        conn_id = %conn_id,
+                        request_id = %req.id,
+                        method = %req.method,
+                        ok = response.ok,
+                        "ws: sent response frame"
+                    );
+                }
+                #[allow(clippy::unwrap_used)] // serializing known-valid struct
+                let _ = client_tx.try_send(serde_json::to_string(&response).unwrap());
+            },
+            GatewayFrame::Response(res) => {
+                // v4 bidirectional RPC: client responding to a server-initiated request.
+                let pending = state
+                    .inner
+                    .write()
+                    .await
+                    .pending_client_requests
+                    .remove(&res.id);
+                if let Some(req) = pending {
+                    let result = if res.ok {
+                        Ok(res.payload.unwrap_or(serde_json::Value::Null))
+                    } else {
+                        Err(res.error.unwrap_or_else(|| {
+                            ErrorShape::new(
+                                error_codes::INTERNAL,
+                                "client returned error without details",
+                            )
+                        }))
+                    };
+                    let _ = req.sender.send(result);
+                } else {
+                    debug!(conn_id = %conn_id, id = %res.id, "ws: response for unknown request");
+                }
             },
             _ => {
                 debug!(conn_id = %conn_id, "ws: ignoring non-request frame");
@@ -355,8 +597,11 @@ pub async fn handle_connection(
     // ── Cleanup ──────────────────────────────────────────────────────────
 
     // Unregister node if applicable.
-    let removed_node = state.nodes.write().await.unregister_by_conn(&conn_id);
+    let removed_node = state.inner.write().await.nodes.unregister_by_conn(&conn_id);
     if let Some(node) = &removed_node {
+        state
+            .node_count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         info!(conn_id = %conn_id, node_id = %node.node_id, "node unregistered");
         broadcast(
             &state,
@@ -376,6 +621,9 @@ pub async fn handle_connection(
         .map(|c| c.connected_at.elapsed())
         .unwrap_or_default();
 
+    #[cfg(feature = "metrics")]
+    moltis_metrics::gauge!(moltis_metrics::websocket::CONNECTIONS_ACTIVE).decrement(1.0);
+
     info!(
         conn_id = %conn_id,
         duration_secs = duration.as_secs(),
@@ -386,10 +634,25 @@ pub async fn handle_connection(
     write_handle.abort();
 }
 
-/// Wait for the first `connect` request frame.
+/// Result of parsing connect params: includes whether v4 format was used.
+struct ConnectResult {
+    request_id: String,
+    params: ConnectParams,
+    is_v4: bool,
+}
+
+async fn graceful_writer_shutdown(
+    client_tx: mpsc::Sender<String>,
+    write_handle: tokio::task::JoinHandle<()>,
+) {
+    drop(client_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), write_handle).await;
+}
+
+/// Wait for the first `connect` request frame. Tries v4 format first, falls back to v3.
 async fn wait_for_connect(
     rx: &mut futures::stream::SplitStream<WebSocket>,
-) -> anyhow::Result<(String, ConnectParams)> {
+) -> anyhow::Result<ConnectResult> {
     while let Some(msg) = rx.next().await {
         let text = match msg? {
             Message::Text(t) => t.to_string(),
@@ -403,9 +666,24 @@ async fn wait_for_connect(
                 if req.method != "connect" {
                     anyhow::bail!("first message must be 'connect', got '{}'", req.method);
                 }
-                let params: ConnectParams =
-                    serde_json::from_value(req.params.unwrap_or(serde_json::Value::Null))?;
-                return Ok((req.id, params));
+                let raw = req.params.unwrap_or(serde_json::Value::Null);
+
+                // Try v4 format first (has `protocol` object instead of flat fields).
+                if let Ok(v4) = serde_json::from_value::<ConnectParamsV4>(raw.clone()) {
+                    return Ok(ConnectResult {
+                        request_id: req.id,
+                        params: v4.into_connect_params(),
+                        is_v4: true,
+                    });
+                }
+
+                // Fall back to v3 flat format.
+                let params: ConnectParams = serde_json::from_value(raw)?;
+                return Ok(ConnectResult {
+                    request_id: req.id,
+                    params,
+                    is_v4: false,
+                });
             },
             _ => anyhow::bail!("first message must be a request frame"),
         }

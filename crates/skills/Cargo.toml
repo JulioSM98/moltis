@@ -5,26 +5,28 @@ version.workspace = true
 
 [dependencies]
 anyhow                = { workspace = true }
-async-trait           = "0.1"
-directories           = { workspace = true }
-flate2                = "1"
+async-trait           = { workspace = true }
+flate2                = { workspace = true }
+moltis-config         = { workspace = true }
 moltis-metrics        = { optional = true, workspace = true }
-notify-debouncer-full = { optional = true, version = "0.7" }
-reqwest               = { workspace = true }
+notify-debouncer-full = { optional = true, workspace = true }
+reqwest               = { optional = true, workspace = true }
 serde                 = { workspace = true }
 serde_json            = { workspace = true }
 serde_yaml            = { workspace = true }
-tar                   = "0.4"
+tar                   = { workspace = true }
 tokio                 = { workspace = true }
 tracing               = { workspace = true }
 
 [features]
-default      = []
+default      = ["install"]
+install      = ["dep:reqwest"]
 file-watcher = ["dep:notify-debouncer-full"]
 metrics      = ["dep:moltis-metrics"]
 
 [dev-dependencies]
-tempfile = "3"
+rstest   = { workspace = true }
+tempfile = { workspace = true }
 tokio    = { features = ["macros", "rt"], workspace = true }
 
 [lints]

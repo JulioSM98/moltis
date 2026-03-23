@@ -5,8 +5,10 @@
 
 pub mod discover;
 pub mod formats;
+#[cfg(feature = "install")]
 pub mod install;
 pub mod manifest;
+pub mod migration;
 pub mod parse;
 pub mod prompt_gen;
 pub mod registry;

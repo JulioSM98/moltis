@@ -1,19 +1,55 @@
+#[cfg(all(
+    feature = "jemalloc",
+    not(target_os = "windows"),
+    not(all(target_os = "linux", target_arch = "aarch64"))
+))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// Tune jemalloc to return unused pages to the OS faster, reducing RSS for
+/// long-running processes. `dirty_decay_ms` and `muzzy_decay_ms` control how
+/// aggressively freed pages are purged (lower = faster return to OS).
+/// `background_thread:true` enables jemalloc's background thread for
+/// asynchronous page purging without stalling allocation.
+///
+/// SAFETY: `export_name` overrides the well-known jemalloc configuration
+/// symbol. There is exactly one definition in the program and the value is a
+/// valid NUL-terminated C string.
+#[cfg(all(
+    feature = "jemalloc",
+    not(target_os = "windows"),
+    not(all(target_os = "linux", target_arch = "aarch64"))
+))]
+#[allow(unsafe_code, non_upper_case_globals)]
+#[unsafe(export_name = "malloc_conf")]
+static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:1000,background_thread:true\0";
+
 mod auth_commands;
+mod browser_commands;
+mod channel_commands;
+mod config_commands;
 mod db_commands;
+mod doctor_commands;
 mod hooks_commands;
+#[cfg(feature = "openclaw-import")]
+mod import_commands;
+mod memory_commands;
+mod node_commands;
 mod sandbox_commands;
+mod service_commands;
 #[cfg(feature = "tailscale")]
 mod tailscale_commands;
 
 use {
+    anyhow::anyhow,
     clap::{Parser, Subcommand},
-    moltis_gateway::logs::{LogBroadcastLayer, LogBuffer},
+    moltis_gateway::logs::{EnabledLogLevels, LogBroadcastLayer, LogBuffer},
     tracing::info,
     tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 
 #[derive(Parser)]
-#[command(name = "moltis", about = "Moltis — personal AI gateway")]
+#[command(name = "moltis", about = "Moltis — personal AI gateway", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -39,6 +75,13 @@ struct Cli {
     /// Custom data directory (overrides default data dir).
     #[arg(long, global = true, env = "MOLTIS_DATA_DIR")]
     data_dir: Option<std::path::PathBuf>,
+    /// Custom share directory for external web/WASM assets (overrides default discovery).
+    #[arg(long, global = true, env = "MOLTIS_SHARE_DIR")]
+    share_dir: Option<std::path::PathBuf>,
+    /// Disable TLS (for cloud deployments where the provider handles TLS).
+    #[cfg(feature = "tls")]
+    #[arg(long, global = true, env = "MOLTIS_NO_TLS")]
+    no_tls: bool,
     /// Tailscale mode: off, serve, or funnel.
     #[cfg(feature = "tailscale")]
     #[arg(long, global = true, env = "MOLTIS_TAILSCALE")]
@@ -63,7 +106,7 @@ enum Commands {
     /// Channel management.
     Channels {
         #[command(subcommand)]
-        action: ChannelAction,
+        action: channel_commands::ChannelAction,
     },
     /// Send a message.
     Send {
@@ -80,7 +123,7 @@ enum Commands {
     /// Configuration management.
     Config {
         #[command(subcommand)]
-        action: ConfigAction,
+        action: config_commands::ConfigAction,
     },
     /// List available models.
     Models,
@@ -108,10 +151,36 @@ enum Commands {
         #[command(subcommand)]
         action: sandbox_commands::SandboxAction,
     },
+    /// Browser configuration management.
+    Browser {
+        #[command(subcommand)]
+        action: browser_commands::BrowserAction,
+    },
     /// Database management (reset, clear, migrate).
     Db {
         #[command(subcommand)]
         action: db_commands::DbAction,
+    },
+    /// Memory search and status.
+    Memory {
+        #[command(subcommand)]
+        action: memory_commands::MemoryAction,
+    },
+    /// Manage remote nodes (generate-token, add, remove, list).
+    Node {
+        #[command(subcommand)]
+        action: node_commands::NodeAction,
+    },
+    /// Install or manage moltis as an OS service.
+    Service {
+        #[command(subcommand)]
+        action: service_commands::ServiceAction,
+    },
+    #[cfg(feature = "openclaw-import")]
+    /// Import data from an OpenClaw installation.
+    Import {
+        #[command(subcommand)]
+        action: import_commands::ImportAction,
     },
     /// Tailscale Serve/Funnel management.
     #[cfg(feature = "tailscale")]
@@ -125,24 +194,10 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
-enum ChannelAction {
-    Status,
-    Login,
-    Logout,
-}
-
-#[derive(Subcommand)]
 enum SessionAction {
     List,
     Clear { key: String },
     History { key: String },
-}
-
-#[derive(Subcommand)]
-enum ConfigAction {
-    Get { key: Option<String> },
-    Set { key: String, value: String },
-    Edit,
 }
 
 #[derive(Subcommand)]
@@ -169,8 +224,24 @@ enum SkillAction {
 /// Initialise tracing and optionally attach a [`LogBroadcastLayer`] that
 /// captures events into an in-memory ring buffer for the web UI.
 fn init_telemetry(cli: &Cli, log_buffer: Option<LogBuffer>) {
-    let filter =
+    // Start with user-specified or default log level
+    let base_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
+
+    // Suppress noisy chromiumoxide logs:
+    // - "WS Invalid message" warnings (Chrome sends CDP events the library doesn't recognize)
+    // - "WS Connection error" errors (normal when idle connections are closed)
+    // These are expected browser sandbox behavior, not actionable errors.
+    let filter = if let Ok(directive) = "chromiumoxide=off".parse() {
+        base_filter.add_directive(directive)
+    } else {
+        base_filter
+    };
+
+    if let Some(ref buffer) = log_buffer {
+        let levels = EnabledLogLevels::from_max_level_hint(filter.max_level_hint());
+        buffer.set_enabled_levels(levels);
+    }
 
     let registry = tracing_subscriber::registry().with(filter);
 
@@ -186,7 +257,7 @@ fn init_telemetry(cli: &Cli, log_buffer: Option<LogBuffer>) {
         registry
             .with(
                 fmt::layer()
-                    .with_target(false)
+                    .with_target(true)
                     .with_thread_ids(false)
                     .with_ansi(true),
             )
@@ -275,7 +346,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Create the log buffer only for the gateway command so the web UI can
-    // display captured log entries.
+    // display captured log entries. Default capacity (1000) can be overridden
+    // via `server.log_buffer_size` in moltis.toml.
     let log_buffer = if matches!(cli.command, None | Some(Commands::Gateway)) {
         Some(LogBuffer::default())
     } else {
@@ -284,25 +356,53 @@ async fn main() -> anyhow::Result<()> {
 
     init_telemetry(&cli, log_buffer.clone());
 
-    info!(version = env!("CARGO_PKG_VERSION"), "moltis starting");
+    info!(version = moltis_config::VERSION, "moltis starting");
+
+    // Apply directory overrides before any command so all subcommands
+    // (config check, db, sandbox, etc.) respect --config-dir / --data-dir.
+    if let Some(ref dir) = cli.config_dir {
+        moltis_config::set_config_dir(dir.clone());
+    }
+    if let Some(ref dir) = cli.data_dir {
+        moltis_config::set_data_dir(dir.clone());
+    }
+    if let Some(ref dir) = cli.share_dir {
+        moltis_config::set_share_dir(dir.clone());
+    }
+
+    // Ensure config/data directories exist for every command path. This is a
+    // hard requirement for startup; fail fast if directory initialization fails.
+    let config_dir =
+        moltis_config::config_dir().ok_or_else(|| anyhow!("unable to resolve config directory"))?;
+    std::fs::create_dir_all(&config_dir).unwrap_or_else(|e| {
+        panic!(
+            "failed to create config directory {}: {e}",
+            config_dir.display()
+        )
+    });
+
+    let data_dir = moltis_config::data_dir();
+    std::fs::create_dir_all(&data_dir).unwrap_or_else(|e| {
+        panic!(
+            "failed to create data directory {}: {e}",
+            data_dir.display()
+        )
+    });
 
     match cli.command {
         // Default: start gateway when no subcommand is provided
         None | Some(Commands::Gateway) => {
-            // Apply directory overrides before loading config
-            if let Some(ref dir) = cli.config_dir {
-                moltis_config::set_config_dir(dir.clone());
-            }
-            if let Some(ref dir) = cli.data_dir {
-                moltis_config::set_data_dir(dir.clone());
-            }
-
             // Load config to get server settings
             let config = moltis_config::discover_and_load();
 
             // CLI args override config values
             let bind = cli.bind.unwrap_or(config.server.bind);
             let port = cli.port.unwrap_or(config.server.port);
+
+            #[cfg(feature = "tls")]
+            let no_tls = cli.no_tls;
+            #[cfg(not(feature = "tls"))]
+            let no_tls = false;
 
             #[cfg(feature = "tailscale")]
             let tailscale_opts = cli
@@ -314,14 +414,22 @@ async fn main() -> anyhow::Result<()> {
             #[cfg(not(feature = "tailscale"))]
             let tailscale_opts: Option<()> = None;
             let _ = &tailscale_opts; // suppress unused warning when feature disabled
+            #[cfg(feature = "web-ui")]
+            let extra_routes: Option<moltis_gateway::server::RouteEnhancer> =
+                Some(moltis_web::web_routes);
+            #[cfg(not(feature = "web-ui"))]
+            let extra_routes: Option<moltis_gateway::server::RouteEnhancer> = None;
+
             moltis_gateway::server::start_gateway(
                 &bind,
                 port,
+                no_tls,
                 log_buffer,
                 cli.config_dir,
                 cli.data_dir,
                 #[cfg(feature = "tailscale")]
                 tailscale_opts,
+                extra_routes,
             )
             .await
         },
@@ -330,13 +438,25 @@ async fn main() -> anyhow::Result<()> {
             println!("{result}");
             Ok(())
         },
-        Some(Commands::Onboard) => moltis_onboarding::wizard::run_onboarding().await,
+        Some(Commands::Onboard) => {
+            moltis_onboarding::wizard::run_onboarding().await?;
+            Ok(())
+        },
+        Some(Commands::Channels { action }) => channel_commands::handle_channels(action).await,
         Some(Commands::Auth { action }) => auth_commands::handle_auth(action).await,
         Some(Commands::Sandbox { action }) => sandbox_commands::handle_sandbox(action).await,
+        Some(Commands::Browser { action }) => browser_commands::handle_browser(action),
         Some(Commands::Db { action }) => db_commands::handle_db(action).await,
+        Some(Commands::Memory { action }) => memory_commands::handle_memory(action).await,
+        Some(Commands::Node { action }) => node_commands::handle_node(action).await,
+        Some(Commands::Service { action }) => service_commands::handle_service(action),
+        #[cfg(feature = "openclaw-import")]
+        Some(Commands::Import { action }) => import_commands::handle_import(action).await,
         #[cfg(feature = "tailscale")]
         Some(Commands::Tailscale { action }) => tailscale_commands::handle_tailscale(action).await,
         Some(Commands::Skills { action }) => handle_skills(action).await,
+        Some(Commands::Config { action }) => config_commands::handle_config(action).await,
+        Some(Commands::Doctor) => doctor_commands::handle_doctor().await,
         Some(Commands::Hooks { action }) => hooks_commands::handle_hooks(action).await,
         #[cfg(feature = "tls")]
         Some(Commands::TrustCa) => trust_ca().await,
@@ -354,8 +474,7 @@ async fn handle_skills(action: SkillAction) -> anyhow::Result<()> {
         registry::{InMemoryRegistry, SkillRegistry},
     };
 
-    let cwd = std::env::current_dir()?;
-    let search_paths = FsSkillDiscoverer::default_paths(&cwd);
+    let search_paths = FsSkillDiscoverer::default_paths();
     let discoverer = FsSkillDiscoverer::new(search_paths);
 
     match action {
