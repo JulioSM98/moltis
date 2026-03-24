@@ -310,6 +310,8 @@ Since the Docker CLI is available in the image (via the mounted socket), you can
 command = "docker"
 args = [
   "run", "--rm", "-i",
+  # NOTE: bind-mount paths resolve against the HOST filesystem, not the
+  # Moltis container. Use the same host path you mounted into Moltis.
   "-v", "/data:/data",
   "--entrypoint", "npx",
   "node:22-alpine",
@@ -322,7 +324,7 @@ command = "docker"
 args = ["run", "--rm", "-i", "mcp/memory"]
 ```
 
-When using containerized MCP servers, remember to mount any directories the server needs access to with `-v`.
+When using containerized MCP servers, remember to mount any directories the server needs access to with `-v`. Because Moltis talks to the Docker daemon via the mounted socket, bind-mount paths (`-v`) always reference the **host** filesystem — not the Moltis container's filesystem.
 
 ## Security Considerations
 
