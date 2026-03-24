@@ -22,7 +22,7 @@ lint: lockfile-check
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(uname -s)" = "Darwin" ]; then
-        cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-targets --all-features --exclude moltis-providers --exclude moltis-gateway --timings -- -D warnings
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --exclude moltis-providers --exclude moltis-gateway --timings -- -D warnings
         cargo +{{nightly_toolchain}} clippy -Z unstable-options -p moltis-providers --all-targets --features local-llm-metal --timings -- -D warnings
         cargo +{{nightly_toolchain}} clippy -Z unstable-options -p moltis-gateway --all-targets --features local-llm-metal --timings -- -D warnings
     else
@@ -256,10 +256,18 @@ build-test: build-css
 
     exit $(( TEST_EXIT > 0 ? TEST_EXIT : E2E_EXIT ))
 
-# Run the same Rust preflight gates used before release packaging.
+# Run the same Rust preflight gates used before release packaging (OS-aware).
 release-preflight: lockfile-check
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo +{{nightly_toolchain}} fmt --all -- --check
-    cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --timings -- -D warnings
+    if [ "$(uname -s)" = "Darwin" ]; then
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --exclude moltis-providers --exclude moltis-gateway --timings -- -D warnings
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options -p moltis-providers --all-targets --features local-llm-metal --timings -- -D warnings
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options -p moltis-gateway --all-targets --features local-llm-metal --timings -- -D warnings
+    else
+        cargo +{{nightly_toolchain}} clippy -Z unstable-options --workspace --all-features --all-targets --timings -- -D warnings
+    fi
 
 # Sync repo-root install.sh into website/install.sh for Cloudflare deployment.
 sync-website-install:
@@ -308,7 +316,7 @@ test:
         cargo +{{nightly_toolchain}} nextest run -p moltis-providers --features local-llm-metal
         cargo +{{nightly_toolchain}} nextest run -p moltis-gateway --features local-llm-metal
     else
-        cargo +{{nightly_toolchain}} nextest run --all-features
+        cargo +{{nightly_toolchain}} nextest run --workspace --all-features
     fi
 
 # Run contract test suites (channel, provider, memory, tools)
