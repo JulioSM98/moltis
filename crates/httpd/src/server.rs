@@ -1652,7 +1652,10 @@ pub async fn start_gateway(
     #[cfg_attr(not(feature = "tls"), allow(unused_variables))]
     let config = &banner.config;
 
-    let addr: SocketAddr = format!("{bind}:{port}").parse()?;
+    let ip: std::net::IpAddr = bind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid bind address '{bind}': {e}"))?;
+    let addr = SocketAddr::new(ip, port);
 
     #[cfg_attr(not(feature = "tls"), allow(unused_variables))]
     let is_localhost =
@@ -2411,6 +2414,36 @@ mod tests {
             let display = SocketAddr::new(ip, addr.port());
             assert!(!display.ip().is_unspecified());
             assert_eq!(display.port(), 9999);
+        }
+    }
+
+    #[test]
+    fn ipv6_bind_addresses_parse_correctly() {
+        // Regression test for GitHub issue #447 — binding to "::" crashed
+        // because `format!("{bind}:{port}")` produced the unparseable ":::8080".
+
+        // Demonstrate the old `format!("{bind}:{port}")` approach is broken for IPv6.
+        assert!(":::8080".parse::<SocketAddr>().is_err());
+        assert!("::1:8080".parse::<SocketAddr>().is_err());
+
+        let cases: &[(&str, u16)] = &[
+            ("::", 8080),
+            ("::1", 8080),
+            ("0.0.0.0", 9090),
+            ("127.0.0.1", 3000),
+            // Parses OK; actual bind requires a zone ID (e.g. fe80::1%eth0) on most OSes.
+            ("fe80::1", 443),
+        ];
+        for &(bind, port) in cases {
+            let ip: std::net::IpAddr = bind.parse().unwrap_or_else(|e| {
+                panic!("failed to parse bind address '{bind}': {e}");
+            });
+            let addr = SocketAddr::new(ip, port);
+            if bind.contains(':') {
+                assert!(addr.is_ipv6(), "expected IPv6 SocketAddr for bind={bind}");
+            } else {
+                assert!(addr.is_ipv4(), "expected IPv4 SocketAddr for bind={bind}");
+            }
         }
     }
 
