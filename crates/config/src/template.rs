@@ -148,6 +148,7 @@ models = ["gpt-5.3", "gpt-5.2"]              # Preferred models shown first
 # enabled = true
 # api_key = "..."                             # Or set FIREWORKS_API_KEY env var
 # models = ["accounts/fireworks/routers/kimi-k2p5-turbo"]
+# fetch_models = true                          # Set false to skip remote discovery
 # base_url = "https://api.fireworks.ai/inference/v1"
 # alias = "fireworks"
 
