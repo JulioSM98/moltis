@@ -142,7 +142,9 @@ This data is visible on the Nodes page and available to the agent via the
 
 If you configure `tools.exec.host = "ssh"`, the Nodes page also shows the SSH
 target even though it is not a WebSocket-paired node. This makes the active
-remote execution route visible instead of hiding it in config.
+remote execution route visible instead of hiding it in config. The UI renders
+these separately from paired nodes so it is clear that SSH targets do not
+report telemetry or presence.
 
 ## CLI Reference
 

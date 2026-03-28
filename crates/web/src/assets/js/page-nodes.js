@@ -23,6 +23,29 @@ var deviceName = signal("");
 
 // ── Helpers ─────────────────────────────────────────────────
 
+function isSshTargetNode(node) {
+	return node?.platform === "ssh" || String(node?.nodeId || "").startsWith("ssh:");
+}
+
+function sshTargetValue(node) {
+	if (!node) return "";
+	if (String(node.nodeId || "").startsWith("ssh:")) {
+		return String(node.nodeId).slice(4);
+	}
+	return String(node.displayName || "")
+		.replace(/^SSH:\s*/i, "")
+		.trim();
+}
+
+function nodeDisplayLabel(node) {
+	if (!node) return "Local";
+	if (isSshTargetNode(node)) {
+		var target = sshTargetValue(node);
+		return target ? `SSH: ${target}` : node.displayName || node.nodeId;
+	}
+	return node.displayName || node.nodeId;
+}
+
 function gatewayWsUrl() {
 	var proto = location.protocol === "https:" ? "wss:" : "ws:";
 	var port = gon.get("port") || location.port;
@@ -293,8 +316,38 @@ function NodeTelemetry({ telemetry }) {
 	</div>`;
 }
 
+function SshTargetCard({ node }) {
+	var target = sshTargetValue(node) || "configured target";
+	return html`<div
+		class="flex items-start gap-3 p-3 rounded-lg bg-[var(--surface-alt)] border border-[var(--border)]"
+	>
+		<div class="w-2 h-2 rounded-full bg-sky-500 shrink-0 mt-1" title="Configured SSH target"></div>
+		<div class="flex-1 min-w-0">
+			<div class="flex items-center gap-2 flex-wrap">
+				<div class="text-sm font-medium text-[var(--text-strong)] truncate">${nodeDisplayLabel(node)}</div>
+				<span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-500">
+					ssh
+				</span>
+				<span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-[var(--bg)] text-[var(--text-muted)] border border-[var(--border)]">
+					configured
+				</span>
+			</div>
+			<div class="text-xs text-[var(--text-muted)] mt-1">
+				<code>${target}</code>
+			</div>
+			<p class="text-xs text-[var(--text-muted)] mt-2 mb-0">
+				Uses your local OpenSSH configuration for remote exec. This is an execution route, not a paired
+				WebSocket node, so telemetry and presence are not available here.
+			</p>
+		</div>
+	</div>`;
+}
+
 function ConnectedNodesList() {
-	if (nodes.value.length === 0) {
+	var sshTargets = nodes.value.filter(isSshTargetNode);
+	var connectedNodes = nodes.value.filter((node) => !isSshTargetNode(node));
+
+	if (connectedNodes.length === 0 && sshTargets.length === 0) {
 		return html`<div class="flex flex-col gap-4">
 			<div class="text-sm text-[var(--text-muted)] py-4 text-center">
 				<p>No nodes connected.</p>
@@ -304,32 +357,45 @@ function ConnectedNodesList() {
 	}
 
 	return html`<div class="flex flex-col gap-2">
-		${nodes.value.map(
-			(n) =>
-				html`<div
-					key=${n.nodeId}
-					class="flex items-center gap-3 p-3 rounded-lg bg-[var(--surface-alt)] border border-[var(--border)]"
-				>
-					<div class="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Connected"></div>
-					<div class="flex-1 min-w-0">
-						<div class="text-sm font-medium text-[var(--text-strong)] truncate">
-							${n.displayName || n.nodeId}
-						</div>
-						<div class="text-xs text-[var(--text-muted)]">
-							${n.platform || "unknown"} · v${n.version || "?"}
-							${n.remoteIp ? html` · ${n.remoteIp}` : null}
-						</div>
-						${
-							n.capabilities?.length
-								? html`<div class="text-xs text-[var(--text-muted)] mt-1">
-									caps: ${n.capabilities.join(", ")}
-								</div>`
-								: null
-						}
-						<${NodeTelemetry} telemetry=${n.telemetry} />
-					</div>
-				</div>`,
-		)}
+		${
+			sshTargets.length > 0 &&
+			html`<div class="flex flex-col gap-2">
+				<div class="text-xs uppercase tracking-wide text-[var(--text-muted)]">Configured SSH Targets</div>
+				${sshTargets.map((node) => html`<${SshTargetCard} key=${node.nodeId} node=${node} />`)}
+			</div>`
+		}
+		${
+			connectedNodes.length > 0 &&
+			html`<div class="flex flex-col gap-2">
+				<div class="text-xs uppercase tracking-wide text-[var(--text-muted)]">Connected Paired Nodes</div>
+				${connectedNodes.map(
+					(n) =>
+						html`<div
+							key=${n.nodeId}
+							class="flex items-center gap-3 p-3 rounded-lg bg-[var(--surface-alt)] border border-[var(--border)]"
+						>
+							<div class="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Connected"></div>
+							<div class="flex-1 min-w-0">
+								<div class="text-sm font-medium text-[var(--text-strong)] truncate">
+									${nodeDisplayLabel(n)}
+								</div>
+								<div class="text-xs text-[var(--text-muted)]">
+									${n.platform || "unknown"} · v${n.version || "?"}
+									${n.remoteIp ? html` · ${n.remoteIp}` : null}
+								</div>
+								${
+									n.capabilities?.length
+										? html`<div class="text-xs text-[var(--text-muted)] mt-1">
+											caps: ${n.capabilities.join(", ")}
+										</div>`
+										: null
+								}
+								<${NodeTelemetry} telemetry=${n.telemetry} />
+							</div>
+						</div>`,
+				)}
+			</div>`
+		}
 	</div>`;
 }
 
@@ -485,9 +551,10 @@ function NodesPage() {
 					</button>
 				</div>
 				<p class="text-xs text-[var(--muted)] leading-relaxed" style="margin:0;">
-					Nodes are remote devices — servers, laptops, phones — that extend your
-					gateway. Each node reports its capabilities and resources, and the agent
-					can choose where to run commands based on available capacity.
+					Nodes are remote execution targets. Paired nodes stream telemetry and
+					capabilities back to the gateway, while configured SSH targets route
+					commands through your local OpenSSH setup. The agent can choose where to
+					run commands based on what is available.
 				</p>
 			</div>
 
