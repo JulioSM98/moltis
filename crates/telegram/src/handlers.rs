@@ -361,71 +361,107 @@ pub async fn handle_message_direct(
             },
         }
     } else if let Some(document_file) = extract_document_file(&msg) {
-        // Handle documents/files - download and forward supported content.
-        match download_telegram_file(bot, &document_file.file_id).await {
-            Ok(document_data) => {
-                debug!(
-                    account_id,
-                    file_id = %document_file.file_id,
-                    media_type = %document_file.media_type,
-                    file_name = ?document_file.file_name,
-                    size = document_data.len(),
-                    "downloaded document"
-                );
+        // Handle documents/files - only download supported types to avoid
+        // wasting bandwidth on files we cannot process.
+        let caption = text.clone().unwrap_or_default();
+        let doc_label = format_document_label(
+            document_file.file_name.as_deref(),
+            &document_file.media_type,
+        );
 
-                let caption = text.clone().unwrap_or_default();
-                let doc_label = format_document_label(
-                    document_file.file_name.as_deref(),
-                    &document_file.media_type,
-                );
+        if !is_supported_document_type(&document_file.media_type) {
+            debug!(
+                account_id,
+                media_type = %document_file.media_type,
+                file_name = ?document_file.file_name,
+                "skipping unsupported document type"
+            );
+            let body = if caption.is_empty() {
+                doc_label
+            } else {
+                format!("{caption}\n{doc_label}")
+            };
+            (body, Vec::new(), None)
+        } else {
+            match download_telegram_file(bot, &document_file.file_id).await {
+                Ok(document_data) => {
+                    debug!(
+                        account_id,
+                        file_id = %document_file.file_id,
+                        media_type = %document_file.media_type,
+                        file_name = ?document_file.file_name,
+                        size = document_data.len(),
+                        "downloaded document"
+                    );
 
-                if document_file.media_type.starts_with("image/") {
-                    let attachment = ChannelAttachment {
-                        media_type: document_file.media_type.clone(),
-                        data: document_data,
-                    };
-                    (caption, vec![attachment], None)
-                } else if let Some(extracted_text) =
-                    extract_text_document_content(&document_data, &document_file.media_type)
-                {
-                    let body = if caption.is_empty() {
-                        format!("{doc_label}\n\n{extracted_text}")
+                    let normalized_type = normalize_media_type(&document_file.media_type);
+                    if normalized_type.starts_with("image/") {
+                        // Optimize image documents the same way as photo messages
+                        let (final_data, media_type) =
+                            match moltis_media::image_ops::optimize_for_llm(
+                                &document_data,
+                                None,
+                            ) {
+                                Ok(optimized) => {
+                                    if optimized.was_resized {
+                                        info!(
+                                            account_id,
+                                            original_size = document_data.len(),
+                                            final_size = optimized.data.len(),
+                                            original_dims = %format!("{}x{}", optimized.original_width, optimized.original_height),
+                                            final_dims = %format!("{}x{}", optimized.final_width, optimized.final_height),
+                                            "resized document image for LLM"
+                                        );
+                                    }
+                                    (optimized.data, optimized.media_type)
+                                },
+                                Err(e) => {
+                                    warn!(account_id, error = %e, "failed to optimize document image, using original");
+                                    (document_data, document_file.media_type.clone())
+                                },
+                            };
+                        let attachment = ChannelAttachment {
+                            media_type,
+                            data: final_data,
+                        };
+                        (caption, vec![attachment], None)
+                    } else if let Some(extracted_text) =
+                        extract_text_document_content(&document_data, &document_file.media_type)
+                    {
+                        let body = if caption.is_empty() {
+                            format!("{doc_label}\n\n{extracted_text}")
+                        } else {
+                            format!("{caption}\n\n{doc_label}\n\n{extracted_text}")
+                        };
+                        (body, Vec::new(), None)
                     } else {
-                        format!("{caption}\n\n{doc_label}\n\n{extracted_text}")
-                    };
-                    (body, Vec::new(), None)
-                } else {
+                        let body = if caption.is_empty() {
+                            doc_label
+                        } else {
+                            format!("{caption}\n{doc_label}")
+                        };
+                        (body, Vec::new(), None)
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        account_id,
+                        error = %e,
+                        file_id = %document_file.file_id,
+                        media_type = %document_file.media_type,
+                        file_name = ?document_file.file_name,
+                        "failed to download document"
+                    );
+
                     let body = if caption.is_empty() {
-                        doc_label
+                        format!("{doc_label}\n[Document - download failed]")
                     } else {
-                        format!("{caption}\n{doc_label}")
+                        format!("{caption}\n{doc_label}\n[Document - download failed]")
                     };
+
                     (body, Vec::new(), None)
-                }
-            },
-            Err(e) => {
-                warn!(
-                    account_id,
-                    error = %e,
-                    file_id = %document_file.file_id,
-                    media_type = %document_file.media_type,
-                    file_name = ?document_file.file_name,
-                    "failed to download document"
-                );
-
-                let caption = text.clone().unwrap_or_default();
-                let doc_label = format_document_label(
-                    document_file.file_name.as_deref(),
-                    &document_file.media_type,
-                );
-                let body = if caption.is_empty() {
-                    format!("{doc_label}\n[Document - download failed]")
-                } else {
-                    format!("{caption}\n{doc_label}\n[Document - download failed]")
-                };
-
-                (body, Vec::new(), None)
-            },
+                },
+            }
         }
     } else if let Some(loc_info) = extract_location(&msg) {
         let lat = loc_info.latitude;
@@ -1570,18 +1606,37 @@ fn format_document_label(file_name: Option<&str>, media_type: &str) -> String {
     }
 }
 
+/// Normalize a MIME type by stripping parameters (e.g. `; charset=utf-8`) and
+/// lower-casing. Returns the base media type only.
+fn normalize_media_type(media_type: &str) -> String {
+    media_type
+        .split(';')
+        .next()
+        .unwrap_or(media_type)
+        .trim()
+        .to_ascii_lowercase()
+}
+
 fn should_inline_document_text(media_type: &str) -> bool {
-    let media_type = media_type.to_ascii_lowercase();
+    let media_type = normalize_media_type(media_type);
     matches!(
         media_type.as_str(),
         "text/html"
             | "text/plain"
             | "text/markdown"
             | "text/x-markdown"
+            | "text/xml"
             | "application/json"
             | "application/xml"
     ) || media_type.ends_with("+json")
         || media_type.ends_with("+xml")
+}
+
+/// Returns `true` for document types we can actually process (text inlining or
+/// image attachment). Used to skip downloading unsupported files.
+fn is_supported_document_type(media_type: &str) -> bool {
+    let normalized = normalize_media_type(media_type);
+    normalized.starts_with("image/") || should_inline_document_text(&normalized)
 }
 
 fn extract_text_document_content(data: &[u8], media_type: &str) -> Option<String> {
@@ -1592,7 +1647,13 @@ fn extract_text_document_content(data: &[u8], media_type: &str) -> Option<String
     let mut truncated = false;
     let bounded = if data.len() > MAX_INLINE_DOCUMENT_BYTES {
         truncated = true;
-        &data[..MAX_INLINE_DOCUMENT_BYTES]
+        // Find the last valid UTF-8 boundary before the limit to avoid
+        // slicing in the middle of a multi-byte sequence.
+        let mut end = MAX_INLINE_DOCUMENT_BYTES;
+        while end > 0 && (data[end] & 0xC0) == 0x80 {
+            end -= 1;
+        }
+        &data[..end]
     } else {
         data
     };
@@ -2172,6 +2233,49 @@ mod tests {
     fn should_inline_markdown_document_types() {
         assert!(should_inline_document_text("text/markdown"));
         assert!(should_inline_document_text("text/x-markdown"));
+    }
+
+    #[test]
+    fn should_inline_text_xml() {
+        assert!(should_inline_document_text("text/xml"));
+    }
+
+    #[test]
+    fn should_inline_with_mime_parameters() {
+        assert!(should_inline_document_text("text/plain; charset=utf-8"));
+        assert!(should_inline_document_text("application/json; charset=utf-8"));
+        assert!(should_inline_document_text("text/html; charset=iso-8859-1"));
+    }
+
+    #[test]
+    fn normalize_media_type_strips_params() {
+        assert_eq!(normalize_media_type("text/plain; charset=utf-8"), "text/plain");
+        assert_eq!(normalize_media_type("TEXT/HTML"), "text/html");
+        assert_eq!(normalize_media_type("application/json"), "application/json");
+    }
+
+    #[test]
+    fn is_supported_document_type_checks() {
+        assert!(is_supported_document_type("image/png"));
+        assert!(is_supported_document_type("image/jpeg; quality=high"));
+        assert!(is_supported_document_type("text/plain"));
+        assert!(is_supported_document_type("application/json"));
+        assert!(!is_supported_document_type("application/pdf"));
+        assert!(!is_supported_document_type("application/octet-stream"));
+    }
+
+    #[test]
+    fn extract_text_document_content_utf8_boundary() {
+        // 3-byte UTF-8 char: € = [0xE2, 0x82, 0xAC]
+        let mut data = vec![b'A'; MAX_INLINE_DOCUMENT_BYTES - 1];
+        // Place a 3-byte char straddling the boundary
+        data.push(0xE2);
+        data.push(0x82);
+        data.push(0xAC);
+        let result = extract_text_document_content(&data, "text/plain")
+            .expect("should produce text");
+        // Should not end with the replacement character
+        assert!(!result.contains('\u{FFFD}'));
     }
 
     #[tokio::test]
