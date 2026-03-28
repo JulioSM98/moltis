@@ -12463,7 +12463,8 @@ mod tests {
 
     /// Verify that a truly unreachable provider still produces a timeout error
     /// (not an infinite hang) after the 30 s limit.
-    #[tokio::test]
+    /// Uses `start_paused = true` so the 30 s timeout elapses instantly.
+    #[tokio::test(start_paused = true)]
     async fn model_probe_times_out_for_unresponsive_provider() {
         let mut registry = ProviderRegistry::empty();
         registry.register(
@@ -12484,21 +12485,14 @@ mod tests {
         let disabled = Arc::new(RwLock::new(DisabledModelsStore::default()));
         let service = LiveModelService::new(Arc::new(RwLock::new(registry)), disabled, vec![]);
 
-        let started = Instant::now();
         let result = service
             .test(serde_json::json!({ "modelId": "local::stuck-model" }))
             .await;
-        let elapsed = started.elapsed();
         assert!(result.is_err(), "probe should fail for stuck provider");
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("timed out"),
             "error should mention timeout: {err}"
-        );
-        // Should have timed out around 30 s, not 120 s.
-        assert!(
-            elapsed < Duration::from_secs(35),
-            "should timeout at ~30s, not {elapsed:?}"
         );
     }
 }

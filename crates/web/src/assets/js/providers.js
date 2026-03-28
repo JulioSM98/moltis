@@ -845,9 +845,15 @@ function saveAndFinishProvider(provider, keyVal, endpointVal, modelVal, selected
 			status.className = "provider-status";
 			status.textContent = `${successDisplayName} configured successfully!`;
 			m.body.appendChild(status);
+			if (modelTimedOut) {
+				var slowHint = document.createElement("div");
+				slowHint.className = "text-xs text-[var(--muted)] mt-1";
+				slowHint.textContent = "Note: model was slow to respond. It may need a moment to finish loading.";
+				m.body.appendChild(slowHint);
+			}
 			fetchModels();
 			if (S.refreshProvidersPage) S.refreshProvidersPage();
-			setTimeout(closeProviderModal, 1500);
+			setTimeout(closeProviderModal, modelTimedOut ? 3500 : 1500);
 		})
 		.catch((err) => {
 			showError(err?.message || "Failed to save credentials.");
