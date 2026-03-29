@@ -91,6 +91,7 @@ pub fn normalize_provider_name(value: &str) -> Option<String> {
         "grok" => "xai",
         "local" => "local-llm",
         "z-ai" | "z.ai" | "zhipu" | "zhipu-ai" => "zai",
+        "zai-code" | "zai-coding" | "zhipu-code" => "zai-code",
         other => other,
     };
 
