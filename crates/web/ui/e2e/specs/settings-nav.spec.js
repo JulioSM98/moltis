@@ -205,7 +205,12 @@ test.describe("Settings navigation", () => {
 		// gon port 99999 — proving we are immune to the behind-proxy bug (#426).
 		expect(wsUrl).not.toContain(":99999");
 		const browserPort = new URL(page.url()).port;
-		expect(wsUrl).toContain(`:${browserPort}/ws`);
+		if (browserPort) {
+			expect(wsUrl).toContain(`:${browserPort}/ws`);
+		} else {
+			// Running on a default port; the URL should have no port component.
+			expect(wsUrl).toMatch(/^wss?:\/\/[^:]+\/ws$/);
+		}
 
 		expect(pageErrors).toEqual([]);
 	});
