@@ -192,6 +192,7 @@ impl ChannelRegistry {
                             connected: false,
                             account_id: account_id.clone(),
                             details: Some(format!("probe error: {e}")),
+                            extra: None,
                         });
                     },
                 }
@@ -613,6 +614,7 @@ mod tests {
                 connected: self.has_account(account_id),
                 account_id: account_id.to_string(),
                 details: None,
+                extra: None,
             })
         }
     }

@@ -1,12 +1,17 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use {
     matrix_sdk::{
         Room,
+        encryption::VerificationState,
         media::{MediaFormat, MediaRequestParameters},
         ruma::{
             OwnedUserId,
             events::room::{
+                encrypted::OriginalSyncRoomEncryptedEvent,
                 member::StrippedRoomMemberEvent,
                 message::{
                     AudioMessageEventContent, LocationMessageEventContent, MessageType,
@@ -34,7 +39,10 @@ use crate::{
     access,
     config::{AutoJoinPolicy, MatrixAccountConfig},
     state::AccountStateMap,
+    verification,
 };
+
+const UTD_NOTICE_COOLDOWN: Duration = Duration::from_secs(300);
 
 #[tracing::instrument(skip(ev, room, accounts, bot_user_id), fields(account_id, room = %room.room_id()))]
 pub async fn handle_room_message(
@@ -79,20 +87,58 @@ pub async fn handle_room_message(
         }
     };
 
-    let chat_type = match room.is_direct().await {
-        Ok(true) => ChatType::Dm,
-        Ok(false) => ChatType::Group,
+    let direct_flag = match room.is_direct().await {
+        Ok(is_direct) => is_direct,
         Err(error) => {
             warn!(
                 account_id,
                 room = %room_id,
-                "failed to determine Matrix DM state, treating room as group: {error}"
+                "failed to determine Matrix DM state, falling back to member-count heuristic: {error}"
             );
-            ChatType::Group
+            false
         },
     };
+    let active_members = room.active_members_count();
+    let joined_members = room.joined_members_count();
+    let chat_type = infer_chat_type(direct_flag, active_members, joined_members);
+
+    info!(
+        account_id,
+        room = %room_id,
+        sender = %sender_id,
+        direct_flag,
+        active_members,
+        joined_members,
+        chat_type = ?chat_type,
+        "matrix inbound message"
+    );
 
     let bot_mentioned = is_bot_mentioned(&ev, &bot_user_id, &body);
+
+    if matches!(ev.content.msgtype, MessageType::VerificationRequest(_)) {
+        verification::handle_room_verification_request(
+            room.clone(),
+            account_id.clone(),
+            sender_id.clone(),
+            event_id.clone(),
+            Arc::clone(&accounts),
+        )
+        .await;
+        return;
+    }
+
+    if matches!(kind, ChannelMessageKind::Text)
+        && verification::maybe_handle_confirmation_message(
+            &body,
+            &room,
+            &account_id,
+            &sender_id,
+            &accounts,
+        )
+        .await
+    {
+        return;
+    }
 
     if let Err(reason) =
         access::check_access(&config, &chat_type, &sender_id, &room_id, bot_mentioned)
@@ -102,6 +148,13 @@ pub async fn handle_room_message(
             && config.otp_self_approval
             && config.dm_policy == DmPolicy::Allowlist
         {
+            info!(
+                account_id,
+                room = %room_id,
+                sender = %sender_id,
+                chat_type = ?chat_type,
+                "matrix inbound entering OTP self-approval flow"
+            );
             handle_otp(
                 &body,
                 &sender_id,
@@ -113,7 +166,14 @@ pub async fn handle_room_message(
             .await;
             return;
         }
-        debug!(account_id, sender = %sender_id, %reason, "access denied");
+        info!(
+            account_id,
+            room = %room_id,
+            sender = %sender_id,
+            chat_type = ?chat_type,
+            %reason,
+            "matrix inbound access denied"
+        );
         return;
     }
 
@@ -224,6 +284,59 @@ pub async fn handle_room_message(
         }
 
         sink.dispatch_to_chat(&body, reply_to, meta).await;
+    }
+}
+
+#[tracing::instrument(skip(ev, room, accounts, bot_user_id), fields(account_id, room = %room.room_id(), event_id = %ev.event_id))]
+pub async fn handle_room_encrypted_event(
+    ev: OriginalSyncRoomEncryptedEvent,
+    room: Room,
+    account_id: String,
+    accounts: AccountStateMap,
+    bot_user_id: OwnedUserId,
+) {
+    if ev.sender == bot_user_id {
+        return;
+    }
+
+    let room_id = room.room_id().to_string();
+    let sender_id = ev.sender.to_string();
+    let verification_state = room.client().encryption().verification_state().get();
+
+    warn!(
+        account_id,
+        room = %room_id,
+        sender = %sender_id,
+        ?verification_state,
+        "matrix encrypted event could not be decrypted yet"
+    );
+
+    let should_notify = {
+        let guard = accounts.read().unwrap_or_else(|error| error.into_inner());
+        let Some(state) = guard.get(&account_id) else {
+            return;
+        };
+        let mut verification = state
+            .verification
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        update_utd_notice_window(
+            &mut verification.recent_utd_notice_by_room,
+            &room_id,
+            Instant::now(),
+        )
+    };
+
+    if !should_notify {
+        return;
+    }
+
+    if let Err(error) = send_text(&room, utd_notice_message(verification_state)).await {
+        warn!(
+            account_id,
+            room = %room_id,
+            "failed to send Matrix undecryptable-event notice: {error}"
+        );
     }
 }
 
@@ -573,6 +686,35 @@ fn inferred_filename(body: &str) -> Option<&str> {
     audio_format_from_extension(extension).map(|_| candidate)
 }
 
+fn update_utd_notice_window(
+    notices: &mut std::collections::HashMap<String, Instant>,
+    room_id: &str,
+    now: Instant,
+) -> bool {
+    let Some(previous) = notices.get(room_id).copied() else {
+        notices.insert(room_id.to_string(), now);
+        return true;
+    };
+
+    if now.duration_since(previous) < UTD_NOTICE_COOLDOWN {
+        return false;
+    }
+
+    notices.insert(room_id.to_string(), now);
+    true
+}
+
+fn utd_notice_message(verification_state: VerificationState) -> &'static str {
+    match verification_state {
+        VerificationState::Verified => {
+            "I received an encrypted Matrix message but could not decrypt it yet. This Moltis device is likely missing room keys for older history. Resend the message after verification, or share keys from Element if needed."
+        },
+        VerificationState::Unknown | VerificationState::Unverified => {
+            "I received an encrypted Matrix message but could not decrypt it yet. This Moltis device likely still needs verification or room keys. Start Element verification with the bot, then reply `verify show` if you need the emoji prompt. After verification finishes, resend the message."
+        },
+    }
+}
+
 fn saved_audio_filename(
     event_id: &str,
     filename: Option<&str>,
@@ -644,6 +786,28 @@ fn record_message_received() {
     .increment(1);
 }
 
+fn infer_chat_type(
+    direct_flag: bool,
+    active_members_count: u64,
+    joined_members_count: u64,
+) -> ChatType {
+    if direct_flag || active_members_count == 2 || joined_members_count == 2 {
+        ChatType::Dm
+    } else {
+        ChatType::Group
+    }
+}
+
+async fn send_status_text(room: &Room, text: &str, context: &str) {
+    if let Err(error) = send_text(room, text).await {
+        warn!(
+            room = %room.room_id(),
+            context,
+            "failed to send Matrix status text: {error}"
+        );
+    }
+}
+
 async fn handle_otp(
     body: &str,
     sender_id: &str,
@@ -667,7 +831,7 @@ async fn handle_otp(
 
         match result {
             OtpVerifyResult::Approved => {
-                let _ = send_text(room, "Access granted.").await;
+                send_status_text(room, "Access granted.", "otp approved").await;
                 if let Some(sink) = &event_sink {
                     sink.emit(ChannelEvent::OtpResolved {
                         channel_type: ChannelType::Matrix,
@@ -681,13 +845,18 @@ async fn handle_otp(
             },
             OtpVerifyResult::WrongCode { attempts_left } => {
                 let msg = format!("Invalid code. {attempts_left} attempts remaining.");
-                let _ = send_text(room, &msg).await;
+                send_status_text(room, &msg, "otp wrong code").await;
             },
             OtpVerifyResult::Expired => {
-                let _ = send_text(room, "Code expired. Send any message for a new one.").await;
+                send_status_text(
+                    room,
+                    "Code expired. Send any message for a new one.",
+                    "otp expired",
+                )
+                .await;
             },
             OtpVerifyResult::LockedOut => {
-                let _ = send_text(room, "Too many attempts. Please wait.").await;
+                send_status_text(room, "Too many attempts. Please wait.", "otp locked").await;
             },
             OtpVerifyResult::NoPending => {
                 // Fall through to initiate
@@ -720,7 +889,7 @@ async fn handle_otp(
                  Ask the admin to approve code: **{code}**\n\
                  Or enter it here if you have it."
             );
-            let _ = send_text(room, &msg).await;
+            send_status_text(room, &msg, "otp created").await;
             if let Some(sink) = &event_sink {
                 sink.emit(ChannelEvent::OtpChallenge {
                     channel_type: ChannelType::Matrix,
@@ -735,10 +904,20 @@ async fn handle_otp(
             }
         },
         OtpInitResult::AlreadyPending => {
-            let _ = send_text(room, "A verification code is already pending.").await;
+            send_status_text(
+                room,
+                "A verification code is already pending.",
+                "otp already pending",
+            )
+            .await;
         },
         OtpInitResult::LockedOut => {
-            let _ = send_text(room, "Too many failed attempts. Please wait.").await;
+            send_status_text(
+                room,
+                "Too many failed attempts. Please wait.",
+                "otp locked out",
+            )
+            .await;
         },
     }
 }
@@ -794,19 +973,29 @@ fn unix_now() -> i64 {
 mod tests {
     use {
         super::{
-            audio_format_from_metadata, first_selection, infer_audio_kind, is_bot_mentioned,
-            location_dispatch_body, parse_geo_uri, saved_audio_filename, should_auto_join_invite,
+            audio_format_from_metadata, first_selection, infer_audio_kind, infer_chat_type,
+            is_bot_mentioned, location_dispatch_body, parse_geo_uri, saved_audio_filename,
+            should_auto_join_invite, update_utd_notice_window, utd_notice_message,
         },
         crate::config::{AutoJoinPolicy, MatrixAccountConfig},
-        matrix_sdk::ruma::{
-            events::room::message::{
-                AudioMessageEventContent, LocationMessageEventContent, OriginalSyncRoomMessageEvent,
+        matrix_sdk::{
+            encryption::VerificationState,
+            ruma::{
+                events::room::message::{
+                    AudioMessageEventContent, LocationMessageEventContent,
+                    OriginalSyncRoomMessageEvent,
+                },
+                mxc_uri, owned_user_id,
+                serde::Raw,
             },
-            mxc_uri, owned_user_id,
-            serde::Raw,
         },
         moltis_channels::{gating::GroupPolicy, plugin::ChannelMessageKind},
+        moltis_common::types::ChatType,
         serde_json::json,
+        std::{
+            collections::HashMap,
+            time::{Duration, Instant},
+        },
     };
 
     fn message_event(value: serde_json::Value) -> OriginalSyncRoomMessageEvent {
@@ -878,6 +1067,23 @@ mod tests {
         }));
 
         assert!(is_bot_mentioned(&event, &bot_user_id, "@room hello"));
+    }
+
+    #[test]
+    fn infer_chat_type_prefers_explicit_direct_flag() {
+        assert_eq!(infer_chat_type(true, 5, 5), ChatType::Dm);
+    }
+
+    #[test]
+    fn infer_chat_type_treats_two_party_rooms_as_dms() {
+        assert_eq!(infer_chat_type(false, 2, 2), ChatType::Dm);
+        assert_eq!(infer_chat_type(false, 2, 1), ChatType::Dm);
+        assert_eq!(infer_chat_type(false, 1, 2), ChatType::Dm);
+    }
+
+    #[test]
+    fn infer_chat_type_keeps_larger_rooms_as_groups() {
+        assert_eq!(infer_chat_type(false, 3, 3), ChatType::Group);
     }
 
     #[test]
@@ -1038,5 +1244,34 @@ mod tests {
             location_dispatch_body(&location, 38.7223, -9.1393),
             "Meet me here\n\nShared location: 38.7223, -9.1393"
         );
+    }
+
+    #[test]
+    fn utd_notice_window_throttles_repeated_notices() {
+        let mut notices = HashMap::new();
+        let now = Instant::now();
+
+        assert!(update_utd_notice_window(
+            &mut notices,
+            "!room:example.org",
+            now
+        ));
+        assert!(!update_utd_notice_window(
+            &mut notices,
+            "!room:example.org",
+            now + Duration::from_secs(60),
+        ));
+        assert!(update_utd_notice_window(
+            &mut notices,
+            "!room:example.org",
+            now + Duration::from_secs(301),
+        ));
+    }
+
+    #[test]
+    fn utd_notice_message_guides_verification_for_unverified_devices() {
+        assert!(utd_notice_message(VerificationState::Unverified).contains("verify show"));
+        assert!(utd_notice_message(VerificationState::Unknown).contains("verification"));
+        assert!(utd_notice_message(VerificationState::Verified).contains("room keys"));
     }
 }

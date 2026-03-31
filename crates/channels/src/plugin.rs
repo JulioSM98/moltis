@@ -44,6 +44,18 @@ impl ChannelType {
             Self::Matrix => "Matrix",
         }
     }
+
+    /// Top-level config fields that must be treated as persisted secrets.
+    pub fn secret_fields(&self) -> &'static [&'static str] {
+        match self {
+            Self::Telegram => &["token"],
+            Self::Whatsapp => &[],
+            Self::MsTeams => &["app_password", "webhook_secret"],
+            Self::Discord => &["token"],
+            Self::Slack => &["bot_token", "app_token", "signing_secret"],
+            Self::Matrix => &["access_token", "password"],
+        }
+    }
 }
 
 impl std::fmt::Display for ChannelType {
@@ -739,6 +751,7 @@ pub struct ChannelHealthSnapshot {
     pub connected: bool,
     pub account_id: String,
     pub details: Option<String>,
+    pub extra: Option<serde_json::Value>,
 }
 
 /// Stream event for edit-in-place streaming.
@@ -1043,6 +1056,26 @@ mod tests {
             );
             assert_eq!(desc.display_name, ct.display_name());
         }
+    }
+
+    #[test]
+    fn channel_type_secret_fields_are_declared() {
+        assert_eq!(ChannelType::Telegram.secret_fields(), ["token"]);
+        assert_eq!(ChannelType::Whatsapp.secret_fields(), &[] as &[&str]);
+        assert_eq!(ChannelType::MsTeams.secret_fields(), [
+            "app_password",
+            "webhook_secret"
+        ]);
+        assert_eq!(ChannelType::Discord.secret_fields(), ["token"]);
+        assert_eq!(ChannelType::Slack.secret_fields(), [
+            "bot_token",
+            "app_token",
+            "signing_secret"
+        ]);
+        assert_eq!(ChannelType::Matrix.secret_fields(), [
+            "access_token",
+            "password"
+        ]);
     }
 
     #[test]

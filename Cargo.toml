@@ -37,6 +37,7 @@ default-members = [
   "crates/qmd",
   "crates/routing",
   "crates/service-traits",
+  "crates/secret-store",
   "crates/sessions",
   "crates/skills",
   "crates/slack",
@@ -91,6 +92,7 @@ members = [
   "crates/routing",
   "crates/schema-export",
   "crates/service-traits",
+  "crates/secret-store",
   "crates/sessions",
   "crates/skills",
   "crates/slack",
@@ -109,6 +111,9 @@ members = [
   "crates/whatsapp",
 ]
 resolver = "2"
+
+[patch.crates-io]
+sqlx-sqlite = { path = "vendor/sqlx-sqlite" }
 
 [workspace.lints.rust]
 unsafe_code           = "deny"
@@ -187,7 +192,7 @@ async-graphql-axum = "7"
 gix                = "0.78"
 hmac               = "0.12"
 llama-cpp-2        = "0.1"
-matrix-sdk         = { default-features = false, features = ["markdown", "native-tls"], version = "0.16" }
+matrix-sdk         = { default-features = false, features = ["e2e-encryption", "markdown", "native-tls", "sqlite"], version = "0.16" }
 mockito            = "1.7"
 open               = "5.3"
 rand               = "0.9"
@@ -329,6 +334,7 @@ moltis-providers       = { features = ["provider-github-copilot", "provider-kimi
 moltis-qmd             = { path = "crates/qmd" }
 moltis-routing         = { path = "crates/routing" }
 moltis-schema-export   = { path = "crates/schema-export" }
+moltis-secret-store    = { default-features = false, path = "crates/secret-store" }
 moltis-service-traits  = { path = "crates/service-traits" }
 moltis-sessions        = { path = "crates/sessions" }
 moltis-skills          = { path = "crates/skills" }

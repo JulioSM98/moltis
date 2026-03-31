@@ -1,15 +1,22 @@
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
 use {
-    matrix_sdk::{Client, Room, config::SyncSettings, ruma::OwnedUserId},
+    matrix_sdk::{
+        Client, Room,
+        config::SyncSettings,
+        encryption::{BackupDownloadStrategy, EncryptionSettings},
+        ruma::{OwnedUserId, events::room::encrypted::OriginalSyncRoomEncryptedEvent},
+    },
+    reqwest::StatusCode,
     secrecy::ExposeSecret,
+    serde::Deserialize,
     tokio_util::sync::CancellationToken,
     tracing::{info, instrument, warn},
 };
 
 use moltis_channels::{Error as ChannelError, Result as ChannelResult};
 
-use crate::{config::MatrixAccountConfig, handler, state::AccountStateMap};
+use crate::{config::MatrixAccountConfig, handler, state::AccountStateMap, verification};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuthMode {
@@ -17,13 +24,40 @@ pub(crate) enum AuthMode {
     Password,
 }
 
-#[instrument(skip(config), fields(homeserver = %config.homeserver))]
-pub(crate) async fn build_client(config: &MatrixAccountConfig) -> ChannelResult<Client> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AccessTokenIdentity {
+    user_id: OwnedUserId,
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccessTokenWhoAmIResponse {
+    user_id: OwnedUserId,
+    #[serde(default)]
+    device_id: Option<String>,
+}
+
+#[instrument(skip(config), fields(account_id, homeserver = %config.homeserver))]
+pub(crate) async fn build_client(
+    account_id: &str,
+    config: &MatrixAccountConfig,
+) -> ChannelResult<Client> {
+    let store_path = ensure_store_path(account_id)?;
     Client::builder()
         .homeserver_url(&config.homeserver)
+        .with_encryption_settings(encryption_settings())
+        .sqlite_store(&store_path, None)
         .build()
         .await
         .map_err(|error| ChannelError::external("matrix client build", error))
+}
+
+fn encryption_settings() -> EncryptionSettings {
+    EncryptionSettings {
+        auto_enable_cross_signing: true,
+        backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+        ..Default::default()
+    }
 }
 
 pub(crate) fn auth_mode(config: &MatrixAccountConfig) -> ChannelResult<AuthMode> {
@@ -60,17 +94,25 @@ pub(crate) async fn authenticate_client(
 ) -> ChannelResult<OwnedUserId> {
     match auth_mode(config)? {
         AuthMode::AccessToken => {
-            restore_access_token_session(client, account_id, config).await?;
-            let bot_user_id = client
-                .whoami()
-                .await
-                .map_err(|error| ChannelError::external("matrix whoami", error))?
-                .user_id;
-            info!(account_id, user_id = %bot_user_id, "matrix session restored");
-            Ok(bot_user_id)
+            let identity = restore_access_token_session(client, account_id, config).await?;
+            client
+                .encryption()
+                .wait_for_e2ee_initialization_tasks()
+                .await;
+            info!(
+                account_id,
+                user_id = %identity.user_id,
+                device_id = identity.device_id.as_deref().unwrap_or("<unknown>"),
+                "matrix session restored"
+            );
+            Ok(identity.user_id)
         },
         AuthMode::Password => {
             login_with_password(client, account_id, config).await?;
+            client
+                .encryption()
+                .wait_for_e2ee_initialization_tasks()
+                .await;
             let bot_user_id = client
                 .whoami()
                 .await
@@ -100,6 +142,32 @@ pub(crate) fn register_event_handlers(
             let buid = bot_uid_msg.clone();
             async move {
                 handler::handle_room_message(ev, room, aid, accounts, buid).await;
+            }
+        },
+    );
+
+    let accounts_for_encrypted = Arc::clone(accounts);
+    let account_id_encrypted = account_id.to_string();
+    let bot_uid_encrypted = bot_user_id.clone();
+    client.add_event_handler(move |ev: OriginalSyncRoomEncryptedEvent, room: Room| {
+        let accounts = Arc::clone(&accounts_for_encrypted);
+        let aid = account_id_encrypted.clone();
+        let buid = bot_uid_encrypted.clone();
+        async move {
+            handler::handle_room_encrypted_event(ev, room, aid, accounts, buid).await;
+        }
+    });
+
+    let accounts_for_to_device = Arc::clone(accounts);
+    let account_id_to_device = account_id.to_string();
+    client.add_event_handler(
+        move |ev: matrix_sdk::ruma::events::ToDeviceEvent<
+            matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEventContent,
+        >| {
+            let accounts = Arc::clone(&accounts_for_to_device);
+            let aid = account_id_to_device.clone();
+            async move {
+                verification::handle_to_device_verification_request(ev, aid, accounts).await;
             }
         },
     );
@@ -181,19 +249,39 @@ pub(crate) async fn sync_once_and_spawn_loop(
     Ok(())
 }
 
-fn restore_session_user_id(configured_user_id: Option<&str>) -> ChannelResult<OwnedUserId> {
-    match configured_user_id {
-        Some(user_id) => user_id
-            .parse()
-            .map_err(|error: matrix_sdk::ruma::IdParseError| {
-                ChannelError::invalid_input(format!("invalid user_id: {error}"))
-            }),
-        None => "@moltis:invalid"
-            .parse()
-            .map_err(|error: matrix_sdk::ruma::IdParseError| {
-                ChannelError::external("matrix session placeholder user_id", error)
-            }),
+fn ensure_store_path(account_id: &str) -> ChannelResult<PathBuf> {
+    let path = moltis_config::data_dir()
+        .join("matrix")
+        .join(account_store_component(account_id));
+    fs::create_dir_all(&path)
+        .map_err(|error| ChannelError::external("matrix create store directory", error))?;
+    Ok(path)
+}
+
+fn account_store_component(account_id: &str) -> String {
+    let sanitized = account_id
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
+            _ => '-',
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "default".to_string()
+    } else {
+        sanitized
     }
+}
+
+fn resolved_device_id(account_id: &str, configured_device_id: Option<&str>) -> String {
+    configured_device_id
+        .map(str::trim)
+        .filter(|device_id| !device_id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("moltis_{}", account_store_component(account_id)))
 }
 
 #[instrument(skip(client, config), fields(account_id))]
@@ -201,26 +289,101 @@ async fn restore_access_token_session(
     client: &Client,
     account_id: &str,
     config: &MatrixAccountConfig,
-) -> ChannelResult<()> {
-    let session = matrix_sdk::authentication::matrix::MatrixSession {
+) -> ChannelResult<AccessTokenIdentity> {
+    let identity = resolve_access_token_identity(config).await?;
+    let session = access_token_session(account_id, config, &identity);
+
+    client
+        .restore_session(session)
+        .await
+        .map_err(|error| ChannelError::external("matrix session restore", error))?;
+
+    Ok(identity)
+}
+
+fn access_token_session(
+    account_id: &str,
+    config: &MatrixAccountConfig,
+    identity: &AccessTokenIdentity,
+) -> matrix_sdk::authentication::matrix::MatrixSession {
+    if config.user_id.as_deref().is_some_and(|user_id| {
+        let trimmed = user_id.trim();
+        !trimmed.is_empty() && trimmed != identity.user_id.as_str()
+    }) {
+        warn!(
+            account_id,
+            configured_user_id = config.user_id.as_deref().unwrap_or_default(),
+            authenticated_user_id = %identity.user_id,
+            "matrix configured user_id does not match token owner, using authenticated user"
+        );
+    }
+
+    if config.device_id.as_deref().is_some_and(|device_id| {
+        let trimmed = device_id.trim();
+        identity
+            .device_id
+            .as_deref()
+            .is_some_and(|actual_device_id| !trimmed.is_empty() && trimmed != actual_device_id)
+    }) {
+        warn!(
+            account_id,
+            configured_device_id = config.device_id.as_deref().unwrap_or_default(),
+            authenticated_device_id = identity.device_id.as_deref().unwrap_or_default(),
+            "matrix configured device_id does not match token device, using authenticated device"
+        );
+    }
+
+    let device_id = identity
+        .device_id
+        .clone()
+        .unwrap_or_else(|| resolved_device_id(account_id, config.device_id.as_deref()));
+
+    matrix_sdk::authentication::matrix::MatrixSession {
         meta: matrix_sdk::SessionMeta {
-            user_id: restore_session_user_id(config.user_id.as_deref())?,
-            device_id: config
-                .device_id
-                .clone()
-                .unwrap_or_else(|| format!("moltis_{account_id}"))
-                .into(),
+            user_id: identity.user_id.clone(),
+            device_id: device_id.into(),
         },
         tokens: matrix_sdk::SessionTokens {
             access_token: config.access_token.expose_secret().clone(),
             refresh_token: None,
         },
-    };
+    }
+}
 
-    client
-        .restore_session(session)
+#[instrument(skip(config))]
+async fn resolve_access_token_identity(
+    config: &MatrixAccountConfig,
+) -> ChannelResult<AccessTokenIdentity> {
+    let homeserver = config.homeserver.trim_end_matches('/');
+    let whoami_url = format!("{homeserver}/_matrix/client/v3/account/whoami");
+    let response = reqwest::Client::new()
+        .get(&whoami_url)
+        .bearer_auth(config.access_token.expose_secret())
+        .send()
         .await
-        .map_err(|error| ChannelError::external("matrix session restore", error))
+        .map_err(|error| ChannelError::external("matrix access token whoami", error))?;
+
+    let response = response
+        .error_for_status()
+        .map_err(|error| match error.status() {
+            Some(StatusCode::UNAUTHORIZED) => {
+                ChannelError::external("matrix access token whoami", error)
+            },
+            _ => ChannelError::external("matrix access token whoami", error),
+        })?;
+
+    let whoami = response
+        .json::<AccessTokenWhoAmIResponse>()
+        .await
+        .map_err(|error| ChannelError::external("matrix access token whoami decode", error))?;
+
+    Ok(AccessTokenIdentity {
+        user_id: whoami.user_id,
+        device_id: whoami
+            .device_id
+            .map(|device_id| device_id.trim().to_string())
+            .filter(|device_id| !device_id.is_empty()),
+    })
 }
 
 #[instrument(skip(client, config), fields(account_id))]
@@ -242,10 +405,9 @@ async fn login_with_password(
         .map(|secret| secret.expose_secret())
         .ok_or_else(|| ChannelError::invalid_input("password is required"))?;
 
+    let device_id = resolved_device_id(account_id, config.device_id.as_deref());
     let mut login = client.matrix_auth().login_username(user_id, password);
-    if let Some(device_id) = config.device_id.as_deref().filter(|id| !id.is_empty()) {
-        login = login.device_id(device_id);
-    }
+    login = login.device_id(&device_id);
     if let Some(display_name) = config
         .device_display_name
         .as_deref()
@@ -321,18 +483,91 @@ mod tests {
     }
 
     #[test]
-    fn restore_session_user_id_uses_configured_value_when_present() {
-        let user_id = restore_session_user_id(Some("@moltis:example.com"))
-            .unwrap_or_else(|error| panic!("configured user_id should parse: {error}"));
+    fn access_token_session_uses_authenticated_user_and_device_identity() {
+        let cfg = MatrixAccountConfig {
+            access_token: Secret::new("syt_test".into()),
+            user_id: Some("@wrong:example.com".into()),
+            device_id: Some("WRONG".into()),
+            ..config()
+        };
+        let actual_user_id = "@bot:example.com"
+            .parse()
+            .unwrap_or_else(|error| panic!("actual user id should parse: {error}"));
+        let identity = AccessTokenIdentity {
+            user_id: actual_user_id,
+            device_id: Some("ABC123".into()),
+        };
 
-        assert_eq!(user_id.as_str(), "@moltis:example.com");
+        let session = access_token_session("matrix-org", &cfg, &identity);
+
+        assert_eq!(session.meta.user_id.as_str(), "@bot:example.com");
+        assert_eq!(session.meta.device_id.as_str(), "ABC123");
     }
 
     #[test]
-    fn restore_session_user_id_falls_back_to_placeholder_when_missing() {
-        let user_id = restore_session_user_id(None)
-            .unwrap_or_else(|error| panic!("placeholder user_id should parse: {error}"));
+    fn access_token_session_falls_back_to_stable_device_id_when_whoami_omits_it() {
+        let cfg = MatrixAccountConfig {
+            access_token: Secret::new("syt_test".into()),
+            ..config()
+        };
+        let actual_user_id = "@bot:example.com"
+            .parse()
+            .unwrap_or_else(|error| panic!("actual user id should parse: {error}"));
+        let identity = AccessTokenIdentity {
+            user_id: actual_user_id,
+            device_id: None,
+        };
 
-        assert_eq!(user_id.as_str(), "@moltis:invalid");
+        let session = access_token_session("matrix:org/test bot", &cfg, &identity);
+
+        assert_eq!(session.meta.user_id.as_str(), "@bot:example.com");
+        assert_eq!(
+            session.meta.device_id.as_str(),
+            "moltis_matrix-org-test-bot"
+        );
+    }
+
+    #[test]
+    fn account_store_component_sanitizes_path_segment() {
+        assert_eq!(
+            account_store_component("matrix-org-lq7m2z"),
+            "matrix-org-lq7m2z"
+        );
+        assert_eq!(
+            account_store_component("matrix:org/test bot"),
+            "matrix-org-test-bot"
+        );
+        assert_eq!(account_store_component(":::"), "default");
+    }
+
+    #[test]
+    fn resolved_device_id_prefers_configured_value() {
+        assert_eq!(
+            resolved_device_id("matrix-org", Some("MOLTISBOT")),
+            "MOLTISBOT"
+        );
+        assert_eq!(
+            resolved_device_id("matrix-org", Some("   ")),
+            "moltis_matrix-org"
+        );
+    }
+
+    #[test]
+    fn resolved_device_id_is_stable_without_config() {
+        assert_eq!(
+            resolved_device_id("matrix:org/test bot", None),
+            "moltis_matrix-org-test-bot"
+        );
+    }
+
+    #[test]
+    fn encryption_settings_enable_cross_signing_and_key_backfill() {
+        let settings = encryption_settings();
+
+        assert!(settings.auto_enable_cross_signing);
+        assert_eq!(
+            settings.backup_download_strategy,
+            BackupDownloadStrategy::AfterDecryptionFailure
+        );
     }
 }

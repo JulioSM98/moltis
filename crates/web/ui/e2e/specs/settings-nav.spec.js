@@ -326,6 +326,12 @@ test.describe("Settings navigation", () => {
 		await expect(page.locator('input[data-field="homeserver"]')).toHaveValue("https://matrix.org");
 		await expect(page.locator('input[data-field="homeserver"]')).toHaveAttribute("placeholder", "https://matrix.org");
 		await expect(page.getByText("Settings -> Help & About -> Advanced -> Access Token")).toBeVisible();
+		await expect(page.getByText("Encrypted Matrix chats require Password auth.", { exact: false })).toBeVisible();
+		await expect(page.getByText("Use Password if you want encrypted Matrix chats.", { exact: false })).toBeVisible();
+		await expect(
+			page.getByText("do not transfer that device's private encryption keys into Moltis", { exact: false }),
+		).toBeVisible();
+		await expect(page.getByText("verify yes", { exact: false })).toBeVisible();
 		await expect(page.getByRole("link", { name: "Matrix setup docs", exact: true })).toHaveAttribute(
 			"href",
 			"https://docs.moltis.org/matrix.html",
@@ -440,6 +446,7 @@ test.describe("Settings navigation", () => {
 
 		await page.locator('input[data-field="homeserver"]').fill("https://matrix.example.com");
 		await page.locator('select[data-field="authMode"]').selectOption("password");
+		await expect(page.getByText("Required for encrypted Matrix chats.", { exact: false })).toBeVisible();
 		await page.locator('input[data-field="userId"]').fill("@bot:example.com");
 		await page.locator('input[data-field="credential"]').fill("correct horse battery staple");
 		await page.locator('select[data-field="autoJoin"]').selectOption("allowlist");
@@ -467,6 +474,75 @@ test.describe("Settings navigation", () => {
 			otp_cooldown_secs: 300,
 		});
 		expect(sentRequest.config).not.toHaveProperty("access_token");
+		expect(pageErrors).toEqual([]);
+	});
+
+	test("channels page shows matrix verification state and pending verification guidance", async ({ page }) => {
+		const pageErrors = watchPageErrors(page);
+		await navigateAndWait(page, "/settings/channels");
+
+		await page.evaluate(async () => {
+			const appScript = document.querySelector('script[type="module"][src*="js/app.js"]');
+			if (!appScript) throw new Error("app.js script not found");
+			const appUrl = new URL(appScript.src, window.location.origin).href;
+			const marker = "js/app.js";
+			const markerIdx = appUrl.indexOf(marker);
+			if (markerIdx < 0) throw new Error("app.js marker not found in script URL");
+			const prefix = appUrl.slice(0, markerIdx);
+			const state = await import(`${prefix}js/state.js`);
+			const wsOpen = typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1;
+			state.setConnected(false);
+			state.setWs({
+				readyState: wsOpen,
+				send(raw) {
+					const req = JSON.parse(raw || "{}");
+					const resolver = state.pending[req.id];
+					if (!resolver) return;
+					if (req.method === "channels.status") {
+						resolver({
+							ok: true,
+							payload: {
+								channels: [
+									{
+										type: "matrix",
+										account_id: "moltis-testbot",
+										name: "Matrix (moltis-testbot)",
+										status: "connected",
+										details: "@moltis-testbot:matrix.org on https://matrix.org",
+										sessions: [],
+										extra: {
+											matrix: {
+												verification_state: "unverified",
+												pending_verifications: [
+													{
+														flow_id: "flow-1",
+														other_user_id: "@alice:matrix.org",
+														room_id: "!room:matrix.org",
+														emoji_lines: ["🐶 Dog", "🔥 Fire"],
+													},
+												],
+											},
+										},
+									},
+								],
+							},
+						});
+					} else if (req.method === "channels.senders.list") {
+						resolver({ ok: true, payload: { senders: [] } });
+					} else {
+						resolver({ ok: false, error: { message: `unexpected rpc in matrix status test: ${req.method}` } });
+					}
+					delete state.pending[req.id];
+				},
+			});
+			state.setConnected(true);
+		});
+
+		await expect(page.getByText("Encryption device state: unverified", { exact: false })).toBeVisible();
+		await expect(page.getByText("Verification pending", { exact: true })).toBeVisible();
+		await expect(page.getByText("With @alice:matrix.org", { exact: true })).toBeVisible();
+		await expect(page.getByText("verify yes", { exact: false })).toBeVisible();
+		await expect(page.getByText("verify show", { exact: false })).toBeVisible();
 		expect(pageErrors).toEqual([]);
 	});
 

@@ -17,6 +17,8 @@ import {
 	generateWebhookSecretHex,
 	MATRIX_DEFAULT_HOMESERVER,
 	MATRIX_DOCS_URL,
+	MATRIX_ENCRYPTION_GUIDANCE,
+	matrixAuthModeGuidance,
 	matrixCredentialLabel,
 	matrixCredentialPlaceholder,
 	normalizeMatrixAuthMode,
@@ -2705,8 +2707,12 @@ function MatrixForm({ onConnected, error, setError }) {
 		<div class="rounded-md border border-[var(--border)] bg-[var(--surface2)] p-3 text-xs text-[var(--muted)] flex flex-col gap-1">
 			<span class="font-medium text-[var(--text-strong)]">Connect a Matrix bot user</span>
 			<span>1. Leave the homeserver as <span class="font-mono">${MATRIX_DEFAULT_HOMESERVER}</span> for matrix.org accounts</span>
-			<span>2. Use either an access token or password login, Matrix user ID is only required for password auth</span>
+			<span>2. Use Password if you want encrypted Matrix chats. Access token auth is for plain Matrix traffic only</span>
 			<span>3. Moltis generates the local account ID automatically from the Matrix user or homeserver</span>
+		</div>
+		<div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-100 flex flex-col gap-1">
+			<span class="font-medium text-emerald-50">Encrypted chats require password auth</span>
+			<span>${MATRIX_ENCRYPTION_GUIDANCE}</span>
 		</div>
 		<div>
 			<label class="text-xs text-[var(--muted)] mb-1 block">Homeserver URL</label>
@@ -2722,6 +2728,7 @@ function MatrixForm({ onConnected, error, setError }) {
 				<option value="access_token">Access token</option>
 				<option value="password">Password</option>
 			</select>
+			<div class="text-xs text-[var(--muted)] mt-1">${matrixAuthModeGuidance(authMode)}</div>
 		</div>
 		<div>
 			<label class="text-xs text-[var(--muted)] mb-1 block">Matrix User ID${authMode === "password" ? " (required)" : " (optional)"}</label>
@@ -2741,8 +2748,8 @@ function MatrixForm({ onConnected, error, setError }) {
 			<div class="text-xs text-[var(--muted)] mt-1">
 				${
 					authMode === "password"
-						? "Use the password for the dedicated Matrix bot account."
-						: html`Get the access token in Element: <span class="font-mono">Settings -> Help & About -> Advanced -> Access Token</span>.`
+						? html`Use the password for the dedicated Matrix bot account. This is the required mode for encrypted Matrix chats because Moltis needs to create and persist its own Matrix device keys.`
+						: html`Get the access token in Element: <span class="font-mono">Settings -> Help & About -> Advanced -> Access Token</span>. Access token mode does <span class="font-medium">not</span> support encrypted Matrix chats because Moltis cannot import that existing device's private encryption keys.`
 				}
 				${" "}
 				<a href=${MATRIX_DOCS_URL} target="_blank" rel="noreferrer" class="text-[var(--accent)] underline">Matrix setup docs</a>

@@ -618,6 +618,12 @@ test.describe("Onboarding wizard", () => {
 			test.skip(true, "Matrix onboarding option is not available in this run");
 			return;
 		}
+		await expect(page.getByText("Encrypted Matrix chats require Password auth.", { exact: false })).toBeVisible();
+		await expect(page.getByText("Use Password if you want encrypted Matrix chats.", { exact: false })).toBeVisible();
+		await expect(
+			page.getByText("do not transfer that device's private encryption keys into Moltis", { exact: false }),
+		).toBeVisible();
+		await expect(page.getByText("verify yes", { exact: false })).toBeVisible();
 
 		await page.evaluate(async () => {
 			const onboardingScript = document.querySelector('script[type="module"][src*="js/onboarding-app.js"]');

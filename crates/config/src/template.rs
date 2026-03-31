@@ -661,10 +661,16 @@ reset_on_exit = true              # Reset serve/funnel when gateway shuts down
 # thread_replies = true           # Reply in threads
 
 # Matrix bots / appservices using access tokens or password login
+# NOTE: Matrix encrypted rooms require password auth. Access tokens can connect
+# for plain Matrix traffic, but they reuse an existing Matrix session without
+# that device's private E2EE keys, so Moltis cannot reliably decrypt encrypted
+# chats from token auth alone. Use password auth so Moltis creates and persists
+# its own Matrix device keys, then finish Element verification in the chat with
+# `verify yes`, `verify no`, `verify show`, or `verify cancel`.
 # [channels.matrix.my-bot]
 # homeserver = "https://matrix.example.com"
-# access_token = "syt_..."        # Access token for the bot account (preferred when set)
-# password = "..."                # Optional alternative to access_token
+# access_token = "syt_..."        # Plain/unencrypted Matrix traffic only
+# password = "..."                # Required for encrypted Matrix chats
 # user_id = "@bot:example.com"    # Required for password login, auto-detected for token auth
 # device_id = "MOLTISBOT"         # Optional device ID for session restore
 # device_display_name = "Moltis Matrix Bot"  # Optional display name for password logins

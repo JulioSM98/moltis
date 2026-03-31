@@ -14,6 +14,8 @@ import {
 	generateWebhookSecretHex,
 	MATRIX_DEFAULT_HOMESERVER,
 	MATRIX_DOCS_URL,
+	MATRIX_ENCRYPTION_GUIDANCE,
+	matrixAuthModeGuidance,
 	matrixCredentialLabel,
 	matrixCredentialPlaceholder,
 	normalizeMatrixAuthMode,
@@ -217,6 +219,11 @@ function ChannelCard(props) {
 	}
 	var desc = channelDescriptor(ch.type);
 	var modeLabel = desc ? MODE_LABELS[desc.capabilities.inbound_mode] || desc.capabilities.inbound_mode : null;
+	var matrixStatus = ch.extra?.matrix || null;
+	var pendingVerifications = Array.isArray(matrixStatus?.pending_verifications)
+		? matrixStatus.pending_verifications
+		: [];
+	var verificationStateLabel = matrixStatus?.verification_state || null;
 
 	return html`<div class="provider-card p-3 rounded-lg mb-2">
     <div class="flex items-center gap-2.5">
@@ -227,11 +234,29 @@ function ChannelCard(props) {
 	        <span class="text-sm text-[var(--text-strong)]">${ch.name || ch.account_id || channelLabel(ch.type)}</span>
         ${ch.details && html`<span class="text-xs text-[var(--muted)]">${ch.details}</span>`}
         ${sessionLine && html`<span class="text-xs text-[var(--muted)]">${sessionLine}</span>`}
+        ${
+					channelType(ch.type) === "matrix" &&
+					verificationStateLabel &&
+					html`<span class="text-xs text-[var(--muted)]">Encryption device state: ${verificationStateLabel}</span>`
+				}
         ${channelType(ch.type) === "telegram" && ch.account_id && html`<a href="https://t.me/${ch.account_id}" target="_blank" class="text-xs text-[var(--accent)] underline">t.me/${ch.account_id}</a>`}
       </div>
       <span class="provider-item-badge ${statusClass}">${ch.status || "unknown"}</span>
       ${modeLabel && html`<span class="tier-badge">${modeLabel}</span>`}
     </div>
+    ${
+			channelType(ch.type) === "matrix" &&
+			pendingVerifications.length > 0 &&
+			html`<div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+		      <div class="font-medium text-emerald-50">Verification pending</div>
+		      ${pendingVerifications.map(
+						(prompt) => html`<div class="mt-1">
+							<div>With ${prompt.other_user_id}</div>
+							<div class="text-emerald-200/90">Reply <span class="font-mono">verify yes</span>, <span class="font-mono">verify no</span>, <span class="font-mono">verify show</span>, or <span class="font-mono">verify cancel</span> in the Matrix chat.</div>
+						</div>`,
+					)}
+		    </div>`
+		}
     <div class="flex gap-2">
       <button class="provider-btn provider-btn-sm provider-btn-secondary" title="Edit ${ch.account_id || "channel"}"
         onClick=${() => {
@@ -1137,9 +1162,13 @@ function AddMatrixModal() {
 	        <div>
 	          <span class="text-xs font-medium text-[var(--text-strong)]">Connect a Matrix bot user</span>
 	          <div class="text-xs text-[var(--muted)] channel-help">1. Leave the homeserver as <span class="font-mono">${MATRIX_DEFAULT_HOMESERVER}</span> for matrix.org accounts</div>
-	          <div class="text-xs text-[var(--muted)]">2. Use either an access token or password login, Matrix user ID is only required for password auth</div>
+	          <div class="text-xs text-[var(--muted)]">2. Use Password if you want encrypted Matrix chats. Access token auth is for plain Matrix traffic only</div>
 	          <div class="text-xs text-[var(--muted)]">3. Moltis generates the local account ID automatically from the Matrix user or homeserver</div>
 	        </div>
+	      </div>
+	      <div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+	        <div class="font-medium text-emerald-50">Encrypted chats require password auth</div>
+	        <div>${MATRIX_ENCRYPTION_GUIDANCE}</div>
 	      </div>
 	      <${ConnectionModeHint} type="matrix" />
 	      <label class="text-xs text-[var(--muted)]">Homeserver URL</label>
@@ -1160,6 +1189,7 @@ function AddMatrixModal() {
 	        <option value="access_token">Access token</option>
 	        <option value="password">Password</option>
 	      </select>
+	      <div class="text-xs text-[var(--muted)]">${matrixAuthModeGuidance(authModeDraft.value)}</div>
 	      <label class="text-xs text-[var(--muted)]">Matrix User ID${authModeDraft.value === "password" ? " (required)" : " (optional)"}</label>
 	      <input data-field="userId" type="text" placeholder="@bot:example.com"
 	        value=${userIdDraft.value}
@@ -1178,8 +1208,8 @@ function AddMatrixModal() {
 	      <div class="text-xs text-[var(--muted)]">
 	        ${
 						authModeDraft.value === "password"
-							? "Use the password for the dedicated Matrix bot account."
-							: html`Get the access token in Element: <span class="font-mono">Settings -> Help & About -> Advanced -> Access Token</span>.`
+							? html`Use the password for the dedicated Matrix bot account. This is the required mode for encrypted Matrix chats because Moltis needs to create and persist its own Matrix device keys.`
+							: html`Get the access token in Element: <span class="font-mono">Settings -> Help & About -> Advanced -> Access Token</span>. Access token mode does <span class="font-medium">not</span> support encrypted Matrix chats because Moltis cannot import that existing device's private encryption keys.`
 					}
 	        ${" "}
 	        <a href=${MATRIX_DOCS_URL} target="_blank" rel="noreferrer" class="text-[var(--accent)] underline">Matrix setup docs</a>
@@ -1581,6 +1611,13 @@ function EditChannelModal() {
 				}
 	      ${
 					isMatrix &&
+					html`<div class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+				        <div class="font-medium text-emerald-50">Encrypted chats require password auth</div>
+				        <div>${MATRIX_ENCRYPTION_GUIDANCE}</div>
+				      </div>`
+				}
+	      ${
+					isMatrix &&
 					html`<div class="flex flex-col gap-1">
 				        <label class="text-xs text-[var(--muted)]">Authentication</label>
 				        <select class="channel-select w-full" value=${editMatrixAuthMode.value}
@@ -1590,6 +1627,7 @@ function EditChannelModal() {
 				          <option value="access_token">Access token</option>
 				          <option value="password">Password</option>
 				        </select>
+				        <div class="text-xs text-[var(--muted)]">${matrixAuthModeGuidance(editMatrixAuthMode.value)}</div>
 				      </div>`
 				}
 	      ${
@@ -1615,6 +1653,15 @@ function EditChannelModal() {
 										editCredential.value = e.target.value;
 									}}
 				          placeholder=${matrixCredentialPlaceholder(editMatrixAuthMode.value)} />
+				        <div class="text-xs text-[var(--muted)]">
+				          ${
+										editMatrixAuthMode.value === "password"
+											? html`Password auth is required for encrypted Matrix chats because Moltis needs its own Matrix device keys.`
+											: html`Access token mode does <span class="font-medium">not</span> support encrypted Matrix chats because Moltis cannot import the existing device's private encryption keys.`
+									}
+				          ${" "}
+				          <a href=${MATRIX_DOCS_URL} target="_blank" rel="noreferrer" class="text-[var(--accent)] underline">Matrix setup docs</a>
+				        </div>
 				      </div>`
 				}
 	      ${

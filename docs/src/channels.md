@@ -10,7 +10,7 @@ capabilities that control what features are available.
 |---------|-------------|--------------------|--------------------|
 | Telegram | Polling | No | Streaming, voice ingest, reactions, OTP, location |
 | Discord | Gateway (WebSocket) | No | Streaming, interactive messages, threads, reactions |
-| Matrix | Gateway (sync loop) | No | Streaming, voice ingest, interactive polls, threads, reactions, OTP, location |
+| Matrix | Gateway (sync loop) | No | Streaming, voice ingest, interactive polls, threads, reactions, OTP, location, encrypted chats, device verification |
 | Microsoft Teams | Webhook | Yes | Streaming, interactive messages, threads |
 | WhatsApp | Gateway (WebSocket) | No | Streaming, voice ingest, OTP, pairing, location |
 | Slack | Socket Mode | No | Streaming, interactive messages, threads, reactions |
@@ -67,6 +67,17 @@ Channels can be configured in two places:
 - In the web UI under **Settings -> Channels**, which stores channel accounts in the internal `channels` table inside `data_dir()/moltis.db`
 
 The web UI does not write channel settings back into `moltis.toml`. It includes an advanced JSON config editor so channel-specific settings remain reachable even when a dedicated form field has not been added yet.
+
+Channel configs stored through the web UI currently live as JSON records in the
+internal `channels` table in `data_dir()/moltis.db`. They are not currently
+wrapped by the Moltis vault, so treat local access to that database as access
+to the configured channel credentials.
+
+Some channel integrations also have platform-specific limits. For Matrix,
+encrypted chats require password auth. Access-token auth is only suitable for
+plain Matrix traffic because Moltis cannot import an existing device's private
+E2EE keys from an access token alone. See [Matrix](./matrix.md) for the full
+setup and verification flow.
 
 `moltis.toml` and the web UI are both loaded at startup. If the same `(channel_type, account_id)` exists in both, the `moltis.toml` entry wins.
 

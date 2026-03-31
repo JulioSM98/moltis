@@ -149,6 +149,9 @@ impl LiveChannelService {
         if let Some(cfg) = config {
             entry["config"] = cfg;
         }
+        if let Some(extra) = snap.extra {
+            entry["extra"] = extra;
+        }
 
         let ct = channel_type.as_str();
         let bound = self

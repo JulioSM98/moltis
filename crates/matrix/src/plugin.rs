@@ -5,6 +5,7 @@ use std::{
 
 use {
     async_trait::async_trait,
+    matrix_sdk::encryption::VerificationState,
     tracing::{info, instrument, warn},
 };
 
@@ -24,6 +25,39 @@ use crate::{
     outbound::MatrixOutbound,
     state::{AccountState, AccountStateMap},
 };
+
+fn verification_state_label(state: VerificationState) -> &'static str {
+    match state {
+        VerificationState::Unknown => "unknown",
+        VerificationState::Verified => "verified",
+        VerificationState::Unverified => "unverified",
+    }
+}
+
+fn matrix_status_extra(state: &AccountState) -> serde_json::Value {
+    let verification_state = state.client.encryption().verification_state().get();
+    let prompts = {
+        let verification = state
+            .verification
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut prompts = verification.prompts.values().cloned().collect::<Vec<_>>();
+        prompts.sort_by(|left, right| left.other_user_id.cmp(&right.other_user_id));
+        prompts
+    };
+
+    serde_json::json!({
+        "matrix": {
+            "verification_state": verification_state_label(verification_state),
+            "pending_verifications": prompts.iter().map(|prompt| serde_json::json!({
+                "flow_id": prompt.flow_id,
+                "other_user_id": prompt.other_user_id,
+                "room_id": prompt.room_id,
+                "emoji_lines": prompt.emoji_lines,
+            })).collect::<Vec<_>>(),
+        }
+    })
+}
 
 /// Matrix/Element channel plugin for Moltis.
 pub struct MatrixPlugin {
@@ -177,7 +211,7 @@ impl ChannelPlugin for MatrixPlugin {
 
         info!(account_id, homeserver = %cfg.homeserver, "starting matrix account");
 
-        let client = client::build_client(&cfg).await?;
+        let client = client::build_client(account_id, &cfg).await?;
         let bot_user_id = client::authenticate_client(&client, account_id, &cfg).await?;
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -196,6 +230,7 @@ impl ChannelPlugin for MatrixPlugin {
                 cancel: cancel.clone(),
                 bot_user_id: bot_user_id.to_string(),
                 otp: std::sync::Mutex::new(OtpState::new(otp_cooldown)),
+                verification: std::sync::Mutex::new(Default::default()),
             });
         }
 
@@ -312,12 +347,14 @@ impl ChannelStatus for MatrixPlugin {
                 connected,
                 account_id: state.account_id.clone(),
                 details: Some(details),
+                extra: Some(matrix_status_extra(state)),
             })
         } else {
             Ok(ChannelHealthSnapshot {
                 connected: false,
                 account_id: account_id.to_string(),
                 details: Some("account not started".into()),
+                extra: None,
             })
         }
     }
@@ -330,9 +367,9 @@ mod tests {
             client,
             client::AuthMode,
             config::{AutoJoinPolicy, MatrixAccountConfig},
-            state::AccountState,
+            state::{AccountState, VerificationPrompt},
         },
-        moltis_channels::{ChannelPlugin, ChannelType, InboundMode, otp::OtpState},
+        moltis_channels::{ChannelPlugin, ChannelStatus, ChannelType, InboundMode, otp::OtpState},
         secrecy::{ExposeSecret, Secret},
         tokio_util::sync::CancellationToken,
     };
@@ -365,6 +402,7 @@ mod tests {
             cancel,
             bot_user_id: "@moltis:example.com".into(),
             otp: std::sync::Mutex::new(OtpState::new(300)),
+            verification: std::sync::Mutex::new(Default::default()),
         }
     }
 
@@ -657,6 +695,54 @@ mod tests {
         assert_eq!(
             state.config.room_policy,
             moltis_channels::gating::GroupPolicy::Open
+        );
+    }
+
+    #[test]
+    fn probe_exposes_matrix_verification_status_details() {
+        let plugin = MatrixPlugin::new();
+        let cancel = CancellationToken::new();
+        {
+            let mut map = plugin.accounts.write().unwrap_or_else(|e| e.into_inner());
+            let state = test_account_state(cancel);
+            {
+                let mut verification = state
+                    .verification
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                verification
+                    .prompts
+                    .insert("flow-1".into(), VerificationPrompt {
+                        flow_id: "flow-1".into(),
+                        other_user_id: "@alice:example.com".into(),
+                        room_id: Some("!room:example.com".into()),
+                        emoji_lines: vec!["🐶 Dog".into(), "🔥 Fire".into()],
+                    });
+            }
+            map.insert("test".into(), state);
+        }
+
+        let snapshot = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("matrix test runtime should build: {error}"))
+            .block_on(plugin.probe("test"))
+            .unwrap_or_else(|error| panic!("matrix probe should succeed: {error}"));
+
+        let extra = snapshot
+            .extra
+            .unwrap_or_else(|| panic!("matrix probe should expose extra status"));
+        assert_eq!(
+            extra["matrix"]["verification_state"].as_str(),
+            Some("unknown")
+        );
+        assert_eq!(
+            extra["matrix"]["pending_verifications"][0]["other_user_id"].as_str(),
+            Some("@alice:example.com")
+        );
+        assert_eq!(
+            extra["matrix"]["pending_verifications"][0]["emoji_lines"][0].as_str(),
+            Some("🐶 Dog")
         );
     }
 }

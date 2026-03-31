@@ -5,6 +5,23 @@ either an access token or a username/password login. The integration runs as an
 outbound sync loop, so it does not require a public webhook URL, port
 forwarding, or TLS termination on your side.
 
+```admonish warning
+Matrix encrypted chats require password auth.
+
+Access-token auth can connect for plain Matrix traffic, but it reuses an
+existing Matrix session without that device's local private encryption keys.
+That means Moltis cannot reliably decrypt encrypted rooms when you connect with
+an access token copied out of Element.
+
+Use password auth so Moltis logs in as its own Matrix device and persists its
+own E2EE keys locally. After that:
+
+- If Element starts verification, Moltis accepts it automatically
+- Moltis posts emoji confirmation instructions in the Matrix chat
+- Reply `verify yes`, `verify no`, `verify show`, or `verify cancel` in Matrix
+- Older encrypted history may remain unreadable until keys are shared
+```
+
 ## How It Works
 
 ```
@@ -32,6 +49,8 @@ forwarding, or TLS termination on your side.
 The Matrix integration currently supports:
 
 - Direct messages and room conversations
+- End-to-end encrypted Matrix chats
+- Matrix device verification / Element "Verify"
 - Interactive action prompts via native Matrix polls
 - Thread-aware replies and thread context fetch
 - Streaming text responses
@@ -41,14 +60,21 @@ The Matrix integration currently supports:
 - OTP self-approval for unknown DM senders
 - Per-room and per-user model overrides
 
+The Matrix integration currently does **not** support:
+
+- Channel pairing via the web UI
+- Rich button/select interactivity beyond poll-style actions
+- Automatic remote-media fetch and reupload for arbitrary outbound URLs
+
 ## Prerequisites
 
 Before configuring Moltis, you need a Matrix bot account:
 
 1. Create or choose a Matrix account for the bot on your homeserver
-2. Either obtain an access token, or keep the account password available
-3. Note the full user ID, for example `@bot:example.com`
-4. Optionally pick a stable `device_id` for session restore
+2. Keep the account password available if you want encrypted Matrix chats
+3. Optionally obtain an access token if you only need plain, unencrypted Matrix traffic
+4. Note the full user ID, for example `@bot:example.com`
+5. Optionally pick a stable `device_id` for session restore
 
 ```admonish warning
 Matrix credentials are secrets. Treat access tokens and passwords like
@@ -58,8 +84,8 @@ passwords, never commit them to version control. Moltis stores them with
 
 ## Getting an Access Token
 
-If you want to use access-token auth instead of password auth, Element can show
-the token for the currently logged-in account:
+If you want to use access-token auth, Element can show the token for the
+currently logged-in account:
 
 1. Sign into the dedicated Matrix bot account in Element
 2. Open `Settings`
@@ -69,8 +95,48 @@ the token for the currently logged-in account:
 
 Use that token as `access_token` in the Matrix channel config.
 
-If you do not want to handle a raw access token, Moltis also supports password
-login. In that case, set `user_id` and `password` instead.
+```admonish warning
+Access-token auth does **not** support encrypted Matrix chats.
+
+Why: the token authenticates an already-existing Matrix device/session, but it
+does not transfer that device's local private E2EE keys into Moltis. For
+encrypted rooms, use `user_id` + `password` so Moltis creates and persists its
+own Matrix device.
+```
+
+If you want encrypted Matrix chats, use password login instead. In that case,
+set `user_id` and `password`.
+
+## Why Password Auth Is Required For Encryption
+
+For encrypted Matrix chats, Moltis must behave like its own Matrix device with
+its own persistent crypto state.
+
+Password auth works for that flow because Moltis logs in as a fresh Matrix
+device, generates its own E2EE identity and one-time keys, stores that device
+state locally, and can then complete normal Element verification.
+
+Access-token auth is different. It authenticates an already-existing Matrix
+session, often one created by Element, but Moltis does not receive that
+existing device's private encryption keys just by knowing the token. That is
+why access-token auth works for plain Matrix traffic but is not a reliable way
+to support encrypted rooms.
+
+Two related Matrix recovery tools often cause confusion:
+
+- The Element recovery key helps a Matrix client unlock server-backed secret
+  storage and backups.
+- Exported room keys let another Matrix client import some historical Megolm
+  room keys from a file.
+
+Moltis does not currently implement recovery-key entry or room-key import, and
+neither feature would make access-token auth equivalent to a proper dedicated
+Moltis device anyway. The supported path for encrypted Matrix chats is still:
+
+1. Add the Matrix account with `user_id` + `password`
+2. Let Moltis create its own Matrix device
+3. Complete Element verification with that Moltis device
+4. Send new encrypted messages after verification
 
 ## Configuration
 
@@ -81,16 +147,17 @@ Matrix can be configured either:
 
 Web UI channel accounts are stored in the internal `channels` table in `data_dir()/moltis.db`. They are not written back into `moltis.toml`. If you need a Matrix setting that does not have a dedicated field yet, use the advanced JSON config editor in the channel form.
 
-Manual file configuration uses a `[channels.matrix.<account-id>]` section in `moltis.toml`:
+```admonish warning
+Web-managed Matrix credentials are not currently wrapped by the Moltis vault.
 
-```toml
-[channels.matrix.my-bot]
-homeserver = "https://matrix.example.com"
-access_token = "syt_..."
-user_id = "@bot:example.com"
+Today, channel configs are stored as JSON in the internal `channels` table in
+`data_dir()/moltis.db`. Matrix secrets are still handled as secrets in code,
+redacted from logs, and redacted from API responses, but they are not yet
+encrypted-at-rest by the vault layer.
 ```
 
-Password login is also supported:
+Manual file configuration uses a `[channels.matrix.<account-id>]` section in `moltis.toml`.
+If you want encrypted Matrix chats, use password auth:
 
 ```toml
 [channels.matrix.my-bot]
@@ -98,6 +165,16 @@ homeserver = "https://matrix.example.com"
 user_id = "@bot:example.com"
 password = "correct horse battery staple"
 device_display_name = "Moltis Matrix Bot"
+```
+
+If you only need plain, unencrypted Matrix traffic, access-token auth still
+works:
+
+```toml
+[channels.matrix.my-bot]
+homeserver = "https://matrix.example.com"
+access_token = "syt_..."
+user_id = "@bot:example.com"
 ```
 
 To show Matrix in the channel picker, include `"matrix"` in `channels.offered`:
@@ -112,8 +189,8 @@ offered = ["telegram", "discord", "slack", "matrix"]
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `homeserver` | **yes** | — | Base URL of the Matrix homeserver |
-| `access_token` | no | — | Access token for the bot account, preferred when both auth methods are configured |
-| `password` | no | — | Password for the bot account when access tokens are not used |
+| `access_token` | no | — | Access token for the bot account, for plain and unencrypted Matrix traffic only |
+| `password` | no | — | Password for the bot account, required for encrypted Matrix chats |
 | `user_id` | no | — | Bot user ID, for example `@bot:example.com`, auto-detected via `whoami` when omitted |
 | `device_id` | no | — | Optional device ID used for session restore |
 | `device_display_name` | no | — | Optional device display name used for password-based logins |
@@ -142,6 +219,11 @@ When you add Matrix through the web UI:
 - the homeserver field defaults to `https://matrix.org`
 - Moltis auto-generates the internal `account_id`
 - the saved account lives in `data_dir()/moltis.db`, not in `moltis.toml`
+- encrypted Matrix chats require password auth
+- access-token auth is for plain Matrix traffic only, because Moltis cannot import the existing device's private E2EE keys from an access token
+- if Element starts device verification, Moltis accepts it and posts emoji confirmation instructions in the room
+- reply `verify yes`, `verify no`, `verify show`, or `verify cancel` in that Matrix chat to finish or inspect the verification flow
+- older encrypted history may still be unreadable if this Moltis device joined after those keys were created
 
 If you want to inspect web-added channels directly, query the SQLite database:
 
@@ -159,9 +241,10 @@ offered = ["matrix"]
 
 [channels.matrix.my-bot]
 homeserver = "https://matrix.example.com"
-access_token = "syt_..."
 user_id = "@bot:example.com"
+password = "correct horse battery staple"
 device_id = "MOLTISBOT"
+device_display_name = "Moltis Matrix Bot"
 dm_policy = "allowlist"
 room_policy = "allowlist"
 mention_mode = "mention"
@@ -282,6 +365,31 @@ seconds.
 - Verify the access token or password is valid
 - Set `user_id` explicitly if startup auto-detection is unreliable
 - Look at logs: `RUST_LOG=moltis_matrix=debug moltis`
+
+### Element shows the room as encrypted
+
+- That is fine, encrypted rooms are supported
+- Make sure the Matrix account was added with password auth, not access-token auth
+- If the Moltis device is new, start Element verification with the bot
+- Moltis will accept the request and post emoji instructions in the chat
+- Reply `verify yes` if the emojis match, `verify no` if they do not
+- If older encrypted history still does not decrypt, resend the message after verification
+
+### Access-token auth connects but encrypted messages do not decrypt
+
+- That is expected with the current implementation
+- Access-token auth is for plain Matrix traffic only
+- Remove the Matrix account from Moltis
+- Re-add it with `user_id` + `password`
+- Verify the new Moltis device in Element
+- Resend a brand new encrypted message after verification
+
+### Element says it is waiting for Moltis to accept verification
+
+- Moltis should accept Matrix verification requests automatically
+- Watch the chat for the emoji confirmation prompt
+- If the prompt scrolled away, send `verify show`
+- If nothing happens, check the Matrix logs for verification events and try starting verification again
 
 ### Bot does not respond in rooms
 

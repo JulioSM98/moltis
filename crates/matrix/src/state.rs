@@ -1,6 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, RwLock},
+    time::Instant,
 };
 
 use {
@@ -24,4 +25,21 @@ pub struct AccountState {
     pub bot_user_id: String,
     /// In-memory OTP challenges (std::sync::Mutex — never held across .await).
     pub otp: Mutex<OtpState>,
+    /// In-memory Matrix verification flow state.
+    pub verification: Mutex<VerificationRuntimeState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationPrompt {
+    pub flow_id: String,
+    pub other_user_id: String,
+    pub room_id: Option<String>,
+    pub emoji_lines: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct VerificationRuntimeState {
+    pub watched_flows: HashSet<String>,
+    pub prompts: HashMap<String, VerificationPrompt>,
+    pub recent_utd_notice_by_room: HashMap<String, Instant>,
 }

@@ -2416,6 +2416,17 @@ pub async fn prepare_gateway_core(
             store::ChannelStore,
         };
 
+        #[cfg(feature = "vault")]
+        let channel_store: Arc<dyn ChannelStore> = {
+            let inner: Arc<dyn ChannelStore> = Arc::new(
+                crate::channel_store::SqliteChannelStore::new(db_pool.clone()),
+            );
+            Arc::new(crate::channel_store::VaultChannelStore::new(
+                inner,
+                vault.clone(),
+            ))
+        };
+        #[cfg(not(feature = "vault"))]
         let channel_store: Arc<dyn ChannelStore> = Arc::new(
             crate::channel_store::SqliteChannelStore::new(db_pool.clone()),
         );
