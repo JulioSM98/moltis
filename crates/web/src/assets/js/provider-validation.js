@@ -29,8 +29,11 @@ export function humanizeProbeError(error) {
 	) {
 		return "Invalid API key. Please double-check and try again.";
 	}
-	if (lower.includes("403") || lower.includes("forbidden") || lower.includes("permission")) {
+	if (lower.includes("403") || lower.includes("forbidden")) {
 		return "Your API key doesn't have access. Check your account permissions.";
+	}
+	if (lower.includes("permission")) {
+		return error;
 	}
 	if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests")) {
 		return "Rate limited by the provider. Wait a moment and try again.";

@@ -694,16 +694,18 @@ var OPENAI_COMPATIBLE = ["openai", "mistral", "openrouter", "cerebras", "minimax
 var BYOM_PROVIDERS = ["venice"];
 
 function ModelSelectCard({ model, selected, probe, onToggle }) {
+	var probeError = probe && probe !== "ok" && probe !== "probing" ? probe.error || "" : "";
 	return html`<div class="model-card ${selected ? "selected" : ""}" onClick=${onToggle}>
 		<div class="flex flex-wrap items-center justify-between gap-2">
 			<span class="text-sm font-medium text-[var(--text)]">${model.displayName}</span>
 			<div class="flex flex-wrap gap-2 justify-end">
 				${model.supportsTools ? html`<span class="recommended-badge">Tools</span>` : null}
 				${probe === "probing" ? html`<span class="tier-badge">Probing\u2026</span>` : null}
-				${probe && probe !== "ok" && probe !== "probing" ? html`<span class="provider-item-badge warning" title=${probe.error || ""}>Unsupported</span>` : null}
+				${probeError ? html`<span class="provider-item-badge warning">Unsupported</span>` : null}
 			</div>
 		</div>
 		<div class="text-xs text-[var(--muted)] mt-1 font-mono">${model.id}</div>
+		${probeError ? html`<div class="text-xs text-[var(--warning)] mt-0.5">${probeError}</div>` : null}
 		${model.createdAt ? html`<time class="text-xs text-[var(--muted)] mt-0.5 opacity-60 block" data-epoch-ms=${model.createdAt * 1000} data-format="year-month"></time>` : null}
 	</div>`;
 }
