@@ -389,17 +389,34 @@ pub async fn handle_poll_response(
     }
 }
 
-fn should_auto_join_invite(config: &MatrixAccountConfig, inviter_id: &str, room_id: &str) -> bool {
-    let room_allowed = match config.room_policy {
-        GroupPolicy::Disabled => false,
-        GroupPolicy::Open => true,
-        GroupPolicy::Allowlist => {
-            !config.room_allowlist.is_empty() && gating::is_allowed(room_id, &config.room_allowlist)
-        },
-    };
-
-    if !room_allowed {
-        return false;
+fn should_auto_join_invite(
+    config: &MatrixAccountConfig,
+    inviter_id: &str,
+    room_id: &str,
+    is_direct: bool,
+) -> bool {
+    if is_direct {
+        // DM invites are gated by dm_policy, not room_policy.
+        let dm_allowed = match config.dm_policy {
+            DmPolicy::Disabled => false,
+            DmPolicy::Open => true,
+            DmPolicy::Allowlist => gating::is_allowed(inviter_id, &config.user_allowlist),
+        };
+        if !dm_allowed {
+            return false;
+        }
+    } else {
+        let room_allowed = match config.room_policy {
+            GroupPolicy::Disabled => false,
+            GroupPolicy::Open => true,
+            GroupPolicy::Allowlist => {
+                !config.room_allowlist.is_empty()
+                    && gating::is_allowed(room_id, &config.room_allowlist)
+            },
+        };
+        if !room_allowed {
+            return false;
+        }
     }
 
     match config.auto_join {
@@ -936,22 +953,27 @@ pub async fn handle_invite(
         return;
     }
 
+    let is_direct = ev.content.is_direct.unwrap_or(false);
+
     let auto_join = {
         let guard = accounts.read().unwrap_or_else(|e| e.into_inner());
         match guard.get(&account_id) {
-            Some(state) => {
-                should_auto_join_invite(&state.config, ev.sender.as_str(), room.room_id().as_str())
-            },
+            Some(state) => should_auto_join_invite(
+                &state.config,
+                ev.sender.as_str(),
+                room.room_id().as_str(),
+                is_direct,
+            ),
             None => return,
         }
     };
 
     if !auto_join {
-        debug!(account_id, room = %room.room_id(), "ignoring invite (auto_join policy)");
+        debug!(account_id, room = %room.room_id(), is_direct, "ignoring invite (auto_join policy)");
         return;
     }
 
-    info!(account_id, room = %room.room_id(), inviter = %ev.sender, "auto-joining room");
+    info!(account_id, room = %room.room_id(), inviter = %ev.sender, is_direct, "auto-joining room");
     if let Err(e) = room.join().await {
         warn!(account_id, room = %room.room_id(), "failed to auto-join: {e}");
     }
@@ -991,7 +1013,7 @@ mod tests {
                 serde::Raw,
             },
         },
-        moltis_channels::{gating::GroupPolicy, plugin::ChannelMessageKind},
+        moltis_channels::{gating::{DmPolicy, GroupPolicy}, plugin::ChannelMessageKind},
         moltis_common::types::ChatType,
         serde_json::json,
         std::{
@@ -1111,6 +1133,7 @@ mod tests {
             &cfg,
             "@alice:example.org",
             "!ops:example.org",
+            false,
         ));
     }
 
@@ -1126,6 +1149,7 @@ mod tests {
             &cfg,
             "@alice:example.org",
             "!ops:example.org",
+            false,
         ));
     }
 
@@ -1143,16 +1167,19 @@ mod tests {
             &cfg,
             "@alice:example.org",
             "!other:example.org",
+            false,
         ));
         assert!(should_auto_join_invite(
             &cfg,
             "@bob:example.org",
             "!ops:example.org",
+            false,
         ));
         assert!(!should_auto_join_invite(
             &cfg,
             "@mallory:example.org",
             "!other:example.org",
+            false,
         ));
     }
 
@@ -1170,11 +1197,13 @@ mod tests {
             &cfg,
             "@mallory:example.org",
             "!ops:example.org",
+            false,
         ));
         assert!(!should_auto_join_invite(
             &cfg,
             "@alice:example.org",
             "!private:example.org",
+            false,
         ));
     }
 
@@ -1190,6 +1219,104 @@ mod tests {
             &cfg,
             "@alice:example.org",
             "!ops:example.org",
+            false,
+        ));
+    }
+
+    #[test]
+    fn dm_invite_uses_dm_policy_not_room_policy() {
+        let cfg = MatrixAccountConfig {
+            auto_join: AutoJoinPolicy::Always,
+            dm_policy: DmPolicy::Open,
+            room_policy: GroupPolicy::Disabled,
+            ..Default::default()
+        };
+
+        // DM invite should succeed even when room_policy is disabled
+        assert!(should_auto_join_invite(
+            &cfg,
+            "@alice:example.org",
+            "!dm:example.org",
+            true,
+        ));
+        // Group invite should still be blocked
+        assert!(!should_auto_join_invite(
+            &cfg,
+            "@alice:example.org",
+            "!dm:example.org",
+            false,
+        ));
+    }
+
+    #[test]
+    fn dm_invite_respects_disabled_dm_policy() {
+        let cfg = MatrixAccountConfig {
+            auto_join: AutoJoinPolicy::Always,
+            dm_policy: DmPolicy::Disabled,
+            room_policy: GroupPolicy::Open,
+            ..Default::default()
+        };
+
+        assert!(!should_auto_join_invite(
+            &cfg,
+            "@alice:example.org",
+            "!dm:example.org",
+            true,
+        ));
+    }
+
+    #[test]
+    fn dm_invite_allowlist_checks_user_allowlist() {
+        let cfg = MatrixAccountConfig {
+            auto_join: AutoJoinPolicy::Always,
+            dm_policy: DmPolicy::Allowlist,
+            user_allowlist: vec!["@alice:example.org".into()],
+            ..Default::default()
+        };
+
+        assert!(should_auto_join_invite(
+            &cfg,
+            "@alice:example.org",
+            "!dm:example.org",
+            true,
+        ));
+        assert!(!should_auto_join_invite(
+            &cfg,
+            "@mallory:example.org",
+            "!dm:example.org",
+            true,
+        ));
+    }
+
+    #[test]
+    fn dm_invite_open_policy_allows_any_user() {
+        let cfg = MatrixAccountConfig {
+            auto_join: AutoJoinPolicy::Always,
+            dm_policy: DmPolicy::Open,
+            ..Default::default()
+        };
+
+        assert!(should_auto_join_invite(
+            &cfg,
+            "@stranger:example.org",
+            "!dm:example.org",
+            true,
+        ));
+    }
+
+    #[test]
+    fn dm_invite_still_respects_auto_join_off() {
+        let cfg = MatrixAccountConfig {
+            auto_join: AutoJoinPolicy::Off,
+            dm_policy: DmPolicy::Open,
+            ..Default::default()
+        };
+
+        assert!(!should_auto_join_invite(
+            &cfg,
+            "@alice:example.org",
+            "!dm:example.org",
+            true,
         ));
     }
 
