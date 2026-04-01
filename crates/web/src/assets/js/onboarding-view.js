@@ -776,13 +776,31 @@ function OnboardingProviderRow({
 	var needsModel = BYOM_PROVIDERS.includes(provider.name);
 	var keyHelp = providerApiKeyHelp(provider);
 
+	var [showAllModels, setShowAllModels] = useState(false);
+	var DEFAULT_VISIBLE = 3;
+
+	// Sort models: recommended first, then by createdAt descending.
+	var sortedModels = (providerModels || []).slice().sort((a, b) => {
+		var aRec = a.recommended ? 1 : 0;
+		var bRec = b.recommended ? 1 : 0;
+		if (aRec !== bRec) return bRec - aRec;
+		var aTime = a.createdAt || 0;
+		var bTime = b.createdAt || 0;
+		if (aTime !== bTime) return bTime - aTime;
+		return (a.displayName || a.id).localeCompare(b.displayName || b.id);
+	});
+
 	// Filter models for the model selector.
-	var filteredModels = (providerModels || []).filter(
+	var filteredModels = sortedModels.filter(
 		(m) =>
 			!modelSearch ||
 			m.displayName.toLowerCase().includes(modelSearch.toLowerCase()) ||
 			m.id.toLowerCase().includes(modelSearch.toLowerCase()),
 	);
+
+	var hasMoreModels = filteredModels.length > DEFAULT_VISIBLE && !modelSearch;
+	var visibleModels = showAllModels || modelSearch ? filteredModels : filteredModels.slice(0, DEFAULT_VISIBLE);
+	var hiddenModelCount = filteredModels.length - DEFAULT_VISIBLE;
 
 	return html`<div ref=${rowRef} class="rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
 		<div class="flex items-center gap-3">
@@ -880,15 +898,19 @@ function OnboardingProviderRow({
 				}
 				<div class="flex flex-col gap-1">
 					${
-						filteredModels.length === 0
+						visibleModels.length === 0
 							? html`<div class="text-xs text-[var(--muted)] py-4 text-center">No models match your search.</div>`
-							: filteredModels.map(
+							: visibleModels.map(
 									(m) => html`<${ModelSelectCard} key=${m.id} model=${m}
 										selected=${selectedModels.has(m.id)}
 										probe=${probeResults.get(m.id)}
 										onToggle=${() => onToggleModel(m.id)} />`,
 								)
 					}
+					${hasMoreModels ? html`<button
+						class="text-xs text-[var(--accent)] cursor-pointer bg-transparent border-none py-1 text-left hover:underline"
+						onClick=${() => setShowAllModels(!showAllModels)}
+					>${showAllModels ? "Show fewer models" : `Show ${hiddenModelCount} more models\u2026`}</button>` : null}
 				</div>
 				<div class="text-xs text-[var(--muted)]">${selectedModels.size === 0 ? "No models selected" : `${selectedModels.size} model${selectedModels.size > 1 ? "s" : ""} selected`}</div>
 				${error ? html`<${ErrorPanel} message=${error} />` : null}
