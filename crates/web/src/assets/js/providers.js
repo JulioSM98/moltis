@@ -1257,7 +1257,7 @@ function showMultiModelSelector(providerName, providerDisplayName, models, saved
 
 			if (probe && probe !== "ok" && probe !== "probing" && probe.error) {
 				var errorLine = document.createElement("div");
-				errorLine.className = "text-xs text-[var(--warning)] mt-0.5";
+				errorLine.className = "text-xs font-medium text-[var(--danger,#ef4444)] mt-0.5";
 				errorLine.textContent = probe.error;
 				card.appendChild(errorLine);
 			}

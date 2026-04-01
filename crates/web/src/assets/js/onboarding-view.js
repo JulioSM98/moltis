@@ -705,7 +705,7 @@ function ModelSelectCard({ model, selected, probe, onToggle }) {
 			</div>
 		</div>
 		<div class="text-xs text-[var(--muted)] mt-1 font-mono">${model.id}</div>
-		${probeError ? html`<div class="text-xs text-[var(--warning)] mt-0.5">${probeError}</div>` : null}
+		${probeError ? html`<div class="text-xs font-medium text-[var(--danger,#ef4444)] mt-0.5">${probeError}</div>` : null}
 		${model.createdAt ? html`<time class="text-xs text-[var(--muted)] mt-0.5 opacity-60 block" data-epoch-ms=${model.createdAt * 1000} data-format="year-month"></time>` : null}
 	</div>`;
 }
