@@ -237,11 +237,14 @@ pub async fn firecrawl_scrape(
 ) -> crate::Result<Option<ScrapeResult>> {
     let endpoint = format!("{}/v1/scrape", base_url.trim_end_matches('/'));
 
+    // Send a shorter timeout to Firecrawl so it can return a structured
+    // error before the HTTP client tears down the connection.
+    let api_timeout_ms = timeout.as_millis().saturating_sub(5_000).max(5_000) as u64;
     let body = serde_json::json!({
         "url": url,
         "formats": ["markdown"],
         "onlyMainContent": only_main_content,
-        "timeout": timeout.as_millis() as u64,
+        "timeout": api_timeout_ms,
     });
 
     let resp = client

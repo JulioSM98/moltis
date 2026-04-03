@@ -171,9 +171,13 @@ impl WebSearchTool {
                     config.duckduckgo_fallback,
                 ))
             },
-            // Firecrawl search: API key comes from the shared Firecrawl config,
-            // not the per-provider search config.  The key is resolved at
-            // construction via `with_firecrawl_api_key` or env var fallback.
+            // Firecrawl search: the API key may come from several sources:
+            //   1. tools.web.search.api_key (checked here)
+            //   2. FIRECRAWL_API_KEY env var (checked here)
+            //   3. tools.web.firecrawl.api_key (injected later via with_firecrawl_config)
+            //   4. Runtime env provider (resolved at execute time)
+            // Because (3) and (4) are not available yet, we always construct
+            // the tool and let execute() handle missing keys gracefully.
             #[cfg(feature = "firecrawl")]
             ConfigSearchProvider::Firecrawl => {
                 let api_key = config
@@ -182,9 +186,6 @@ impl WebSearchTool {
                     .map(|s| s.expose_secret().clone())
                     .or_else(|| env_value_with_overrides(env_overrides, "FIRECRAWL_API_KEY"))
                     .unwrap_or_default();
-                if api_key.is_empty() && !config.duckduckgo_fallback {
-                    return None;
-                }
                 Some(Self::new(
                     SearchProvider::Firecrawl {
                         base_url: crate::firecrawl::DEFAULT_BASE_URL.into(),
