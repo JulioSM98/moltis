@@ -1651,6 +1651,9 @@ pub async fn prepare_gateway_core(
         .manager()
         .set_env_overrides(runtime_env_overrides.clone())
         .await;
+    // Update model service env overrides with UI-stored API keys so that
+    // "Detect All Models" can discover models from those providers too.
+    *live_model_service.env_overrides_handle().write().await = runtime_env_overrides.clone();
     live_mcp
         .set_credential_store(Arc::clone(&credential_store))
         .await;

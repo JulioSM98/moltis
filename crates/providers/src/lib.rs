@@ -371,11 +371,32 @@ fn start_ollama_discovery(
     rx
 }
 
+/// Result of a runtime model rediscovery pass.
+///
+/// Bundles the discovered model lists together with any Ollama `/api/show`
+/// probe results so that registration can proceed without further I/O.
+/// Ollama probe data is opaque — callers pass this struct directly to
+/// [`ProviderRegistry::register_rediscovered_models`].
+pub struct RediscoveryResult {
+    /// Models discovered per provider (keyed by config name).
+    models: HashMap<String, Vec<DiscoveredModel>>,
+    /// Ollama `/api/show` probe metadata (keyed by model ID).
+    ollama_probes: HashMap<String, OllamaShowResponse>,
+}
+
+impl RediscoveryResult {
+    /// Returns `true` when no providers returned any models.
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+}
+
 /// Asynchronously fetch models from all discoverable provider APIs.
 ///
 /// Runs `/v1/models` (or Ollama `/api/tags`) for each eligible provider
-/// concurrently and returns the results keyed by provider config name.
-/// Failures for individual providers are logged and skipped.
+/// concurrently, then batch-probes any discovered Ollama models via
+/// `/api/show` for tool-mode metadata. Returns everything needed for
+/// lock-free registration.
 ///
 /// `provider_filter` narrows the scope to a single provider name (case-
 /// insensitive comparison against config name or alias).
@@ -383,7 +404,7 @@ pub async fn fetch_discoverable_models(
     config: &ProvidersConfig,
     env_overrides: &HashMap<String, String>,
     provider_filter: Option<&str>,
-) -> HashMap<String, Vec<DiscoveredModel>> {
+) -> RediscoveryResult {
     use futures::future::join_all;
 
     let filter_matches =
@@ -520,7 +541,24 @@ pub async fn fetch_discoverable_models(
             },
         }
     }
-    map
+
+    // Batch-probe any newly discovered Ollama models for `/api/show` metadata
+    // (tool capabilities, family info). Runs outside any registry lock.
+    let ollama_probes = if let Some(ollama_models) = map.get("ollama") {
+        let ollama_base_url = config
+            .get("ollama")
+            .and_then(|e| e.base_url.clone())
+            .or_else(|| env_value(env_overrides, "OLLAMA_BASE_URL"))
+            .unwrap_or_else(|| "http://localhost:11434".into());
+        probe_ollama_models_batch_async(&ollama_base_url, ollama_models).await
+    } else {
+        HashMap::new()
+    };
+
+    RediscoveryResult {
+        models: map,
+        ollama_probes,
+    }
 }
 
 // ── Ollama model info probing ────────────────────────────────────────────────
@@ -702,6 +740,34 @@ fn probe_ollama_models_batch(
             .collect(),
         _ => HashMap::new(),
     }
+}
+
+/// Async variant of [`probe_ollama_models_batch`] that runs directly on the
+/// current tokio runtime. Suitable for callers already in an async context
+/// (e.g. runtime rediscovery in `detect_supported`).
+async fn probe_ollama_models_batch_async(
+    base_url: &str,
+    models: &[DiscoveredModel],
+) -> HashMap<String, OllamaShowResponse> {
+    if models.is_empty() {
+        return HashMap::new();
+    }
+    let futs: Vec<_> = models
+        .iter()
+        .map(|m| {
+            let base = base_url.to_string();
+            let model_id = m.id.clone();
+            async move {
+                let resp = probe_ollama_model_info(&base, &model_id).await;
+                (model_id, resp)
+            }
+        })
+        .collect();
+    futures::future::join_all(futs)
+        .await
+        .into_iter()
+        .filter_map(|(id, r)| r.ok().map(|resp| (id, resp)))
+        .collect()
 }
 
 struct RegistryModelProvider {
@@ -1841,32 +1907,18 @@ impl ProviderRegistry {
         results
     }
 
-    /// Asynchronously re-discover models from provider APIs (`/v1/models`)
-    /// and register any newly found models that are not already present.
+    /// Register models from a [`RediscoveryResult`], skipping those already
+    /// present. All I/O (model list fetches, Ollama probes) must be completed
+    /// before calling this — it only does fast in-memory work.
     ///
-    /// This is the runtime counterpart of the startup discovery pipeline
-    /// (`fire_discoveries` → `collect_discoveries` → registration). Unlike
-    /// startup, HTTP fetches run fully async and only new models are added.
-    ///
-    /// Returns the number of newly registered models.
-    pub async fn rediscover_models(
-        &mut self,
-        config: &ProvidersConfig,
-        env_overrides: &HashMap<String, String>,
-        provider_filter: Option<&str>,
-    ) -> usize {
-        let fetched = fetch_discoverable_models(config, env_overrides, provider_filter).await;
-        self.register_rediscovered_models(config, env_overrides, &fetched)
-    }
-
-    /// Register models from a rediscovery fetch, skipping those already present.
     /// Returns the number of newly registered models.
     pub fn register_rediscovered_models(
         &mut self,
         config: &ProvidersConfig,
         env_overrides: &HashMap<String, String>,
-        fetched: &HashMap<String, Vec<DiscoveredModel>>,
+        result: &RediscoveryResult,
     ) -> usize {
+        let fetched = &result.models;
         let mut added = 0usize;
 
         // ── OpenAI builtin ────────────────────────────────────────────
@@ -1955,11 +2007,13 @@ impl ProviderRegistry {
                 .unwrap_or_default();
             let is_ollama = def.config_name == "ollama";
 
-            // Batch-probe Ollama models for tool mode metadata.
-            let ollama_probes: HashMap<String, OllamaShowResponse> = if is_ollama {
-                probe_ollama_models_batch(&base_url, models)
+            // Use pre-fetched Ollama `/api/show` probes (already collected
+            // outside the registry lock by `fetch_discoverable_models`).
+            let empty_probes = HashMap::new();
+            let ollama_probes: &HashMap<String, OllamaShowResponse> = if is_ollama {
+                &result.ollama_probes
             } else {
-                HashMap::new()
+                &empty_probes
             };
 
             for model in models {
@@ -4690,13 +4744,17 @@ mod tests {
         let before = reg.list_models().len();
 
         // Simulate a rediscovery that found two new models.
-        let mut fetched = HashMap::new();
-        fetched.insert("custom-test".to_string(), vec![
+        let mut models = HashMap::new();
+        models.insert("custom-test".to_string(), vec![
             DiscoveredModel::new("new-model-a", "New Model A"),
             DiscoveredModel::new("new-model-b", "New Model B"),
         ]);
+        let result = RediscoveryResult {
+            models,
+            ollama_probes: HashMap::new(),
+        };
 
-        let added = reg.register_rediscovered_models(&config, &env_overrides, &fetched);
+        let added = reg.register_rediscovered_models(&config, &env_overrides, &result);
         assert_eq!(added, 2, "should register 2 new models");
         assert_eq!(
             reg.list_models().len(),
@@ -4705,7 +4763,7 @@ mod tests {
         );
 
         // Running again with the same models should not add duplicates.
-        let added_again = reg.register_rediscovered_models(&config, &env_overrides, &fetched);
+        let added_again = reg.register_rediscovered_models(&config, &env_overrides, &result);
         assert_eq!(added_again, 0, "should not re-register existing models");
     }
 
@@ -4729,13 +4787,17 @@ mod tests {
         let before = reg.list_models().len();
 
         // Rediscovery returns both the existing model and a new one.
-        let mut fetched = HashMap::new();
-        fetched.insert("custom-test".to_string(), vec![
+        let mut models = HashMap::new();
+        models.insert("custom-test".to_string(), vec![
             DiscoveredModel::new("existing-model", "Existing Model"),
             DiscoveredModel::new("brand-new-model", "Brand New Model"),
         ]);
+        let result = RediscoveryResult {
+            models,
+            ollama_probes: HashMap::new(),
+        };
 
-        let added = reg.register_rediscovered_models(&config, &env_overrides, &fetched);
+        let added = reg.register_rediscovered_models(&config, &env_overrides, &result);
         assert_eq!(added, 1, "should only add the brand-new model");
         assert_eq!(reg.list_models().len(), before + 1);
     }

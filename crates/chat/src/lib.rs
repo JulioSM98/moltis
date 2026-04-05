@@ -1499,7 +1499,8 @@ pub struct LiveModelService {
     /// Provider config for runtime model rediscovery.
     providers_config: moltis_config::schema::ProvidersConfig,
     /// Environment variable overrides for runtime model rediscovery.
-    env_overrides: HashMap<String, String>,
+    /// Shared so the gateway can update it after loading UI-stored keys.
+    env_overrides: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl LiveModelService {
@@ -1516,7 +1517,7 @@ impl LiveModelService {
             priority_models: Arc::new(RwLock::new(priority_models)),
             show_legacy_models: false,
             providers_config: moltis_config::schema::ProvidersConfig::default(),
-            env_overrides: HashMap::new(),
+            env_overrides: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -1525,16 +1526,23 @@ impl LiveModelService {
         self
     }
 
-    /// Set the provider config and env overrides used for runtime model
-    /// rediscovery when "Detect All Models" is triggered.
+    /// Set the provider config and initial env overrides used for runtime
+    /// model rediscovery when "Detect All Models" is triggered.
     pub fn with_discovery_config(
         mut self,
         providers_config: moltis_config::schema::ProvidersConfig,
         env_overrides: HashMap<String, String>,
     ) -> Self {
         self.providers_config = providers_config;
-        self.env_overrides = env_overrides;
+        self.env_overrides = Arc::new(RwLock::new(env_overrides));
         self
+    }
+
+    /// Shared handle to the env overrides. Pass this to code that needs to
+    /// update the overrides after construction (e.g. when runtime UI-stored
+    /// API keys are loaded from the credential store).
+    pub fn env_overrides_handle(&self) -> Arc<RwLock<HashMap<String, String>>> {
+        Arc::clone(&self.env_overrides)
     }
 
     /// Shared handle to the priority models list. Pass this to services
@@ -1942,21 +1950,22 @@ impl ModelService for LiveModelService {
         // added models (e.g. a model loaded into llama.cpp after startup)
         // are found before probing.
         //
-        // HTTP fetches run outside the registry lock; only the fast
-        // in-memory registration takes the write lock.
+        // HTTP fetches and Ollama `/api/show` probes run outside the
+        // registry lock; only the fast in-memory registration takes it.
         {
-            let fetched = moltis_providers::fetch_discoverable_models(
+            let env_snapshot = self.env_overrides.read().await.clone();
+            let result = moltis_providers::fetch_discoverable_models(
                 &self.providers_config,
-                &self.env_overrides,
+                &env_snapshot,
                 provider_filter.as_deref(),
             )
             .await;
-            if !fetched.is_empty() {
+            if !result.is_empty() {
                 let mut reg = self.providers.write().await;
                 let new_count = reg.register_rediscovered_models(
                     &self.providers_config,
-                    &self.env_overrides,
-                    &fetched,
+                    &env_snapshot,
+                    &result,
                 );
                 if new_count > 0 {
                     tracing::info!(
