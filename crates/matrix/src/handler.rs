@@ -105,7 +105,7 @@ pub async fn handle_room_message(
     let joined_members = room.joined_members_count();
     let chat_type = infer_chat_type(direct_flag, active_members, joined_members);
 
-    info!(
+    debug!(
         account_id,
         room = %room_id,
         sender = %sender_id,
