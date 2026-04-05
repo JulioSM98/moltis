@@ -789,8 +789,8 @@ pub fn supports_vision_for_model(model_id: &str) -> bool {
     }
     // Legacy OpenAI models without vision
     if id.starts_with("gpt-3.5") || id.starts_with("text-") || id.starts_with("gpt-4-") {
-        // gpt-4-turbo is the exception — it supports vision
-        if id.starts_with("gpt-4-turbo") {
+        // gpt-4-turbo and gpt-4-vision variants support vision
+        if id.starts_with("gpt-4-turbo") || id.starts_with("gpt-4-vision") {
             return true;
         }
         return false;
@@ -2694,8 +2694,9 @@ mod tests {
         assert!(supports_vision_for_model("gpt-4o-mini"));
         assert!(supports_vision_for_model("openrouter::openai/gpt-4o"));
 
-        // GPT-4 turbo supports vision
+        // GPT-4 turbo and vision variants support vision
         assert!(supports_vision_for_model("gpt-4-turbo"));
+        assert!(supports_vision_for_model("gpt-4-vision-preview"));
 
         // GPT-5 supports vision
         assert!(supports_vision_for_model("gpt-5.2-codex"));
