@@ -151,7 +151,7 @@ export async function validateProviderConnection(providerName) {
 	if (!res?.ok) {
 		return {
 			ok: false,
-			message: res?.error?.message || "Failed to validate provider credentials.",
+			message: res?.error?.serverMessage || res?.error?.message || "Failed to validate provider credentials.",
 		};
 	}
 
