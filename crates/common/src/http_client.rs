@@ -29,11 +29,20 @@ pub fn upstream_proxy_url() -> Option<&'static str> {
 /// Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes.
 pub fn build_http_client(proxy_url: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
-    if let Some(url) = proxy_url
-        && let Ok(proxy) = reqwest::Proxy::all(url)
-    {
-        let proxy = proxy.no_proxy(reqwest::NoProxy::from_string("localhost,127.0.0.1,::1"));
-        builder = builder.proxy(proxy);
+    if let Some(url) = proxy_url {
+        match reqwest::Proxy::all(url) {
+            Ok(proxy) => {
+                let proxy =
+                    proxy.no_proxy(reqwest::NoProxy::from_string("localhost,127.0.0.1,::1"));
+                builder = builder.proxy(proxy);
+            },
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to parse upstream proxy URL, falling back to direct connection"
+                );
+            },
+        }
     }
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -62,12 +71,15 @@ pub fn apply_proxy(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilde
 /// Redact credentials from a proxy URL for safe logging.
 ///
 /// Returns a version of the URL with `user:pass@` replaced by `***@`.
-/// If the URL cannot be parsed, returns `"<invalid proxy URL>"`.
+/// If the URL cannot be parsed, returns the URL as-is (no secrets to leak).
 pub fn redact_proxy_url(url: &str) -> String {
     // Parse minimally: look for `://user:pass@` pattern.
+    // Use `rfind('@')` so that literal `@` characters inside a
+    // percent-encoded password (e.g. `user:p%40ss@host`) are still
+    // fully redacted — the last `@` is always the userinfo delimiter.
     if let Some(scheme_end) = url.find("://") {
         let after_scheme = &url[scheme_end + 3..];
-        if let Some(at_pos) = after_scheme.find('@') {
+        if let Some(at_pos) = after_scheme.rfind('@') {
             // Has userinfo — redact it.
             let host_part = &after_scheme[at_pos..]; // includes '@'
             return format!("{}://***{host_part}", &url[..scheme_end]);
@@ -145,6 +157,16 @@ mod tests {
         // user without password still has '@'
         assert_eq!(
             redact_proxy_url("http://user@proxy:8080"),
+            "http://***@proxy:8080"
+        );
+    }
+
+    #[test]
+    fn redact_proxy_url_at_in_password() {
+        // Literal '@' in password (percent-encoded as %40 but decoded in URL).
+        // rfind ensures we split on the last '@' (the userinfo delimiter).
+        assert_eq!(
+            redact_proxy_url("http://user:p@ss@proxy:8080"),
             "http://***@proxy:8080"
         );
     }
