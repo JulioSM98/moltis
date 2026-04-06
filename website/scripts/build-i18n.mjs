@@ -31,7 +31,7 @@ const LANGUAGES = {
       // Home page
       ["Full OpenClaw import — switch in one click", "完整 OpenClaw 导入 — 一键切换"],
       [">New<", ">新<"],
-      ["A Rust-native claw you can trust", "值得信赖的 Rust 原生 claw"],
+      ["A secure persistent personal agent server in Rust", "值得信赖的 Rust 原生 claw"],
       ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "单一二进制文件。沙盒化。多提供商大语言模型。语音、记忆、频道、MCP 工具。运行在您的硬件上。"],
       [">Install now<", ">立即安装<"],
       ["Screenshots", "截图"],
@@ -191,7 +191,7 @@ const LANGUAGES = {
       ["Fly command copied", "Comando Fly copiado"],
       ["Full OpenClaw import — switch in one click", "Importación completa de OpenClaw — cambia en un clic"],
       [">New<", ">Nuevo<"],
-      ["A Rust-native claw you can trust", "Un claw nativo en Rust en el que puedes confiar"],
+      ["A secure persistent personal agent server in Rust", "Un claw nativo en Rust en el que puedes confiar"],
       ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "Un solo binario. Sandboxeado. LLMs multi-proveedor. Voz, memoria, canales, herramientas MCP. Se ejecuta en tu hardware."],
       [">Install now<", ">Instalar ahora<"],
       ["Screenshots", "Capturas de pantalla"],
@@ -336,7 +336,7 @@ const LANGUAGES = {
       ["Fly command copied", "Fly-Befehl kopiert"],
       ["Full OpenClaw import — switch in one click", "Vollständiger OpenClaw-Import — mit einem Klick wechseln"],
       [">New<", ">Neu<"],
-      ["A Rust-native claw you can trust", "Ein vertrauenswürdiger Rust-nativer Claw"],
+      ["A secure persistent personal agent server in Rust", "Ein vertrauenswürdiger Rust-nativer Claw"],
       ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "Ein Binary. Sandboxed. Multi-Provider-LLMs. Sprache, Gedächtnis, Kanäle, MCP-Tools. Läuft auf Ihrer Hardware."],
       [">Install now<", ">Jetzt installieren<"],
       ["Screenshots", "Screenshots"],
@@ -482,7 +482,7 @@ LANGUAGES.it = {
     ["Fly command copied", "Comando Fly copiato"],
     ["Full OpenClaw import — switch in one click", "Import completo da OpenClaw — passa con un clic"],
     [">New<", ">Novita<"],
-    ["A Rust-native claw you can trust", "Un claw nativo Rust di cui ti puoi fidare"],
+    ["A secure persistent personal agent server in Rust", "Un claw nativo Rust di cui ti puoi fidare"],
     ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "Un solo binario. In sandbox. LLM multi-provider. Voce, memoria, canali, strumenti MCP. Gira sul tuo hardware."],
     [">Install now<", ">Installa ora<"],
     ["Screenshots", "Screenshot"],
@@ -578,7 +578,7 @@ LANGUAGES.pt = {
     ["Fly command copied", "Comando Fly copiado"],
     ["Full OpenClaw import — switch in one click", "Importação completa do OpenClaw — troque em um clique"],
     [">New<", ">Novo<"],
-    ["A Rust-native claw you can trust", "Um claw nativo em Rust em que você pode confiar"],
+    ["A secure persistent personal agent server in Rust", "Um claw nativo em Rust em que você pode confiar"],
     ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "Um binário. Sandboxed. LLMs multi-provedor. Voz, memória, canais, ferramentas MCP. Roda no seu hardware."],
     [">Install now<", ">Instalar agora<"], ["Screenshots", "Capturas de tela"],
     ["Get running in seconds", "Funcionando em segundos"],
@@ -689,7 +689,7 @@ LANGUAGES.ja = {
     ["Fly command copied", "Flyコマンドをコピーしました"],
     ["Full OpenClaw import — switch in one click", "OpenClawの完全インポート — ワンクリックで切り替え"],
     [">New<", ">新着<"],
-    ["A Rust-native claw you can trust", "信頼できるRustネイティブclaw"],
+    ["A secure persistent personal agent server in Rust", "信頼できるRustネイティブclaw"],
     ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "単一バイナリ。サンドボックス化。マルチプロバイダーLLM。音声、メモリ、チャンネル、MCPツール。あなたのハードウェアで実行。"],
     [">Install now<", ">今すぐインストール<"], ["Screenshots", "スクリーンショット"],
     ["Get running in seconds", "数秒で起動"],
@@ -800,7 +800,7 @@ LANGUAGES.ko = {
     ["Fly command copied", "Fly 명령어가 복사되었습니다"],
     ["Full OpenClaw import — switch in one click", "OpenClaw 전체 가져오기 — 한 번의 클릭으로 전환"],
     [">New<", ">신규<"],
-    ["A Rust-native claw you can trust", "신뢰할 수 있는 Rust 네이티브 claw"],
+    ["A secure persistent personal agent server in Rust", "신뢰할 수 있는 Rust 네이티브 claw"],
     ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "단일 바이너리. 샌드박스. 멀티 프로바이더 LLM. 음성, 메모리, 채널, MCP 도구. 당신의 하드웨어에서 실행."],
     [">Install now<", ">지금 설치<"], ["Screenshots", "스크린샷"],
     ["Get running in seconds", "몇 초 만에 실행"],
@@ -911,7 +911,7 @@ LANGUAGES.ru = {
     ["Fly command copied", "Команда Fly скопирована"],
     ["Full OpenClaw import — switch in one click", "Полный импорт OpenClaw — переключение в один клик"],
     [">New<", ">Новое<"],
-    ["A Rust-native claw you can trust", "Надёжный Rust-нативный claw"],
+    ["A secure persistent personal agent server in Rust", "Надёжный Rust-нативный claw"],
     ["One binary. Sandboxed. Multi-provider LLMs. Voice, memory, channels, MCP tools. Runs on your hardware.", "Один бинарник. Песочница. Мульти-провайдерные LLM. Голос, память, каналы, MCP-инструменты. Работает на вашем оборудовании."],
     [">Install now<", ">Установить сейчас<"], ["Screenshots", "Скриншоты"],
     ["Get running in seconds", "Запуск за секунды"],
@@ -1024,17 +1024,17 @@ function buildLang(lang) {
 
   // 3. title
   html = html.replace(
-    /<title>Moltis — A Rust-native claw you can trust<\/title>/,
+    /<title>Moltis — A secure persistent personal agent server in Rust<\/title>/,
     `<title>${lang.title}</title>`
   );
 
   // 4. meta description (content attribute)
-  const enDesc = "A Rust-native claw you can trust. One binary, sandboxed execution, multi-provider LLMs, voice, memory, Telegram, WhatsApp, Discord, Teams, and MCP tools. Secure by design, runs on your hardware.";
+  const enDesc = "A secure persistent personal agent server in Rust. One binary, sandboxed execution, multi-provider LLMs, voice, memory, Telegram, WhatsApp, Discord, Teams, and MCP tools. Secure by design, runs on your hardware.";
   html = html.replaceAll(enDesc, lang.metaDesc);
 
   // 5. og:title / twitter:title
   html = html.replaceAll(
-    'content="Moltis — A Rust-native claw you can trust"',
+    'content="Moltis — A secure persistent personal agent server in Rust"',
     `content="${lang.title}"`
   );
 
