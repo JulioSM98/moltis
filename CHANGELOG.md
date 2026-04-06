@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260406.03] - 2026-04-06
+### Fixed
+- [web] Restore all-features build
+
 ## [20260406.02] - 2026-04-06
 ### Fixed
 - [web] Map config reload errors explicitly
