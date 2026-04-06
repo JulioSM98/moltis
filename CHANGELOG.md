@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260406.01] - 2026-04-06
+### Added
+- [cron] Auto-clean orphaned sessions and prune sandbox containers
+
+
+### Fixed
+- [swift-bridge] Await embedded httpd shutdown
+- [cron] Use time crate for retention math and fix named-session guard
+- [sandbox] Include remove_image_override in cleanup_session
+- [cron] Skip pruning cycle when session key lookup fails
+- [web] Reload offered channels from config
+- [ci] Await channel preload in settings e2e
+
 ## [20260405.06] - 2026-04-05
 ### Security
 - Add GitHub artifact attestations to release workflow
