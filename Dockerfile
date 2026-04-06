@@ -45,9 +45,9 @@ RUN rustup target add wasm32-wasip2 && \
 ARG MOLTIS_VERSION
 ENV MOLTIS_VERSION=${MOLTIS_VERSION}
 RUN cargo build --release -p moltis --no-default-features --features "\
-agent,caldav,code-splitter,file-watcher,graphql,jemalloc,local-llm,\
-mdns,metrics,openclaw-import,prometheus,push-notifications,qmd,\
-tailscale,tls,trusted-network,vault,voice,wasm,web-ui,whatsapp"
+agent,caldav,code-splitter,firecrawl,file-watcher,graphql,jemalloc,local-llm,\
+matrix,mdns,metrics,ngrok,openclaw-import,prometheus,push-notifications,qmd,\
+slack,tailscale,tls,trusted-network,vault,voice,wasm,web-ui,whatsapp"
 
 # Runtime stage
 FROM debian:bookworm-slim
