@@ -107,10 +107,13 @@ function WebhooksListPanel() {
       </div>
 
       ${webhooks.value.length === 0
-        ? html`<div
-            class="text-sm text-[var(--muted)] py-8 text-center"
-          >
-            No webhooks configured.
+        ? html`<div class="text-sm text-[var(--muted)] py-8 text-center flex flex-col items-center gap-2">
+            <div>No webhooks configured.</div>
+            <div class="text-xs">
+              Use <a href="https://hoppscotch.io" target="_blank" rel="noopener"
+                class="text-[var(--accent)] underline">Hoppscotch</a> to test your
+              webhooks by sending POST requests with custom headers and JSON bodies.
+            </div>
           </div>`
         : html`<div class="flex flex-col gap-2">
             ${webhooks.value.map(

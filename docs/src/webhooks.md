@@ -377,6 +377,21 @@ On startup, Moltis scans for deliveries with status `received` or `queued` and
 re-queues them for processing. Accepted deliveries are not silently dropped on
 restart.
 
+## Testing Webhooks
+
+Use [Hoppscotch](https://hoppscotch.io) (free, open source, no signup) to test
+your webhooks. Set the method to POST, paste your webhook endpoint URL, add a
+JSON body, and set any required auth headers.
+
+Alternatively, use the included test script:
+
+```bash
+./scripts/test-webhook.sh <webhook-url> --profile github --secret <your-secret>
+```
+
+Available profiles: `generic`, `github`, `gitlab`, `stripe`. Each sends a
+realistic sample payload with the correct headers and signature.
+
 ## Example: GitHub PR Reviewer
 
 A complete example of setting up a webhook that reviews pull requests:
