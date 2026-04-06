@@ -125,6 +125,7 @@ for (const lang of LANGUAGES) {
       expectedNav.features,
       expectedNav.security,
       expectedNav.compare,
+      expectedNav.changelog,
     ];
     if (JSON.stringify(actualNav) === JSON.stringify(expectedNavOrder)) {
       pass(`Top nav labels localized for ${lang.code.toUpperCase()}`);
