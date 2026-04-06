@@ -35,8 +35,10 @@ impl SourceProfile for GenericProfile {
         None
     }
 
-    fn parse_delivery_key(&self, headers: &HeaderMap, body: &[u8]) -> Option<String> {
-        // Try common delivery ID headers
+    fn parse_delivery_key(&self, headers: &HeaderMap, _body: &[u8]) -> Option<String> {
+        // Try common delivery ID headers.
+        // Do NOT fall back to body hash — identical payloads are legitimate
+        // for generic webhooks (e.g. repeated alerts, test deliveries).
         for header in &[
             "x-delivery-id",
             "x-request-id",
@@ -47,10 +49,7 @@ impl SourceProfile for GenericProfile {
                 return Some(val.to_string());
             }
         }
-        // Fall back to body hash
-        use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(body);
-        Some(format!("sha256:{}", hex::encode(hash)))
+        None
     }
 
     fn entity_key(&self, _event_type: &str, _body: &serde_json::Value) -> Option<String> {
