@@ -139,10 +139,11 @@ fn verify_stripe_signature(
     }
 
     // Compute expected signature: HMAC-SHA256(secret, "timestamp.body")
-    let signed_payload = format!("{ts}.{}", std::str::from_utf8(body).unwrap_or(""));
+    // Concatenate as raw bytes to avoid lossy UTF-8 conversion.
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .map_err(|e| Error::auth_failed(e.to_string()))?;
-    mac.update(signed_payload.as_bytes());
+    mac.update(format!("{ts}.").as_bytes());
+    mac.update(body);
     let expected = hex::encode(mac.finalize().into_bytes());
 
     if signatures

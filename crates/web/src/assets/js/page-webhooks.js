@@ -380,19 +380,17 @@ function WebhookModal() {
       params.sourceProfile = sourceProfile.value;
     }
 
-    // Build auth config based on mode
+    // Build auth config based on mode. The key name must match what
+    // the Rust verify function expects: "token" for bearer/gitlab,
+    // "secret" for all HMAC-based modes, "header"+"value" for static.
     var secret = authSecretRef.current?.value?.trim();
-    if (secret) {
+    if (secret && authMode.value !== "none") {
       if (authMode.value === "static_header") {
         params.authConfig = { header: "X-Webhook-Secret", value: secret };
-      } else if (authMode.value === "bearer") {
+      } else if (authMode.value === "bearer" || authMode.value === "gitlab_token") {
         params.authConfig = { token: secret };
-      } else if (authMode.value === "gitlab_token") {
-        params.authConfig = { token: secret };
-      } else if (
-        authMode.value === "github_hmac_sha256" ||
-        authMode.value === "stripe_webhook_signature"
-      ) {
+      } else {
+        // All HMAC-based modes (github, stripe, linear, pagerduty, sentry)
         params.authConfig = { secret };
       }
     }
@@ -424,6 +422,9 @@ function WebhookModal() {
     { value: "github_hmac_sha256", label: "GitHub HMAC-SHA256" },
     { value: "gitlab_token", label: "GitLab Token" },
     { value: "stripe_webhook_signature", label: "Stripe Signature" },
+    { value: "linear_webhook_signature", label: "Linear Signature" },
+    { value: "pagerduty_v2_signature", label: "PagerDuty v2 Signature" },
+    { value: "sentry_webhook_signature", label: "Sentry Signature" },
   ];
 
   var sessionOptions = [

@@ -68,7 +68,18 @@ pub fn extract_safe_headers(headers: &axum::http::HeaderMap) -> serde_json::Valu
         "user-agent",
         "idempotency-key",
     ];
-    let deny = ["authorization", "x-gitlab-token", "cookie"];
+    let deny = [
+        "authorization",
+        "x-gitlab-token",
+        "cookie",
+        // HMAC signatures — not secrets themselves but provide a signature
+        // oracle if logged alongside the stored body.
+        "x-hub-signature-256",
+        "x-pagerduty-signature",
+        "stripe-signature",
+        "linear-signature",
+        "sentry-hook-signature",
+    ];
 
     let mut map = serde_json::Map::new();
     for (name, value) in headers {

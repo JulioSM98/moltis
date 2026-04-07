@@ -578,6 +578,15 @@ impl WebhookStore for SqliteWebhookStore {
     }
 
     async fn prune_deliveries_before(&self, before: &str) -> Result<u64> {
+        // Delete child response_actions first (foreign_keys pragma may
+        // not be enabled on every pooled connection).
+        sqlx::query(
+            "DELETE FROM webhook_response_actions WHERE delivery_id IN \
+             (SELECT id FROM webhook_deliveries WHERE received_at < ?)",
+        )
+        .bind(before)
+        .execute(&self.pool)
+        .await?;
         let result = sqlx::query("DELETE FROM webhook_deliveries WHERE received_at < ?")
             .bind(before)
             .execute(&self.pool)
