@@ -126,12 +126,13 @@ fn verify_stripe_signature(
         return Err(Error::auth_failed("missing v1 signature"));
     }
 
-    // Check timestamp tolerance (5 minutes)
-    if let Ok(ts_secs) = ts.parse::<i64>() {
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
-        if (now - ts_secs).unsigned_abs() > 300 {
-            return Err(Error::auth_failed("Stripe signature timestamp too old"));
-        }
+    // Check timestamp tolerance (5 minutes). Fail closed on non-numeric timestamps.
+    let ts_secs = ts
+        .parse::<i64>()
+        .map_err(|_| Error::auth_failed("invalid Stripe signature timestamp"))?;
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    if (now - ts_secs).unsigned_abs() > 300 {
+        return Err(Error::auth_failed("Stripe signature timestamp too old"));
     }
 
     // Compute expected signature: HMAC-SHA256(secret, "timestamp.body")
@@ -288,5 +289,58 @@ mod tests {
     fn test_none_always_ok() {
         let headers = HeaderMap::new();
         assert!(verify(&AuthMode::None, None, &headers, b"anything").is_ok());
+    }
+
+    #[test]
+    fn test_stripe_invalid_timestamp_fails_closed() {
+        let secret = "whsec_test";
+        let body = b"{}";
+        // Forge a signature with t=invalid — must be rejected, not silently accepted.
+        let signed_payload = "invalid.{}";
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(signed_payload.as_bytes());
+        let sig = hex::encode(mac.finalize().into_bytes());
+
+        let config = serde_json::json!({ "secret": secret });
+        let headers = make_headers(&[(
+            "stripe-signature",
+            &format!("t=invalid,v1={sig}"),
+        )]);
+        let result = verify(
+            &AuthMode::StripeWebhookSignature,
+            Some(&config),
+            &headers,
+            body,
+        );
+        assert!(result.is_err(), "non-numeric timestamp must be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("invalid"),
+            "error should mention invalid timestamp"
+        );
+    }
+
+    #[test]
+    fn test_stripe_old_timestamp_rejected() {
+        let secret = "whsec_test";
+        let body = b"{}";
+        // Use a timestamp 10 minutes ago (> 5 min tolerance).
+        let old_ts = time::OffsetDateTime::now_utc().unix_timestamp() - 600;
+        let signed_payload = format!("{old_ts}.{{}}");
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(signed_payload.as_bytes());
+        let sig = hex::encode(mac.finalize().into_bytes());
+
+        let config = serde_json::json!({ "secret": secret });
+        let headers = make_headers(&[(
+            "stripe-signature",
+            &format!("t={old_ts},v1={sig}"),
+        )]);
+        let result = verify(
+            &AuthMode::StripeWebhookSignature,
+            Some(&config),
+            &headers,
+            body,
+        );
+        assert!(result.is_err(), "old timestamp must be rejected");
     }
 }
