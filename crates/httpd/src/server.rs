@@ -1188,8 +1188,7 @@ pub async fn prepare_gateway(
                             };
 
                             // Look up webhook by public_id.
-                            let mut webhook = match store.get_webhook_by_public_id(&public_id).await
-                            {
+                            let webhook = match store.get_webhook_by_public_id(&public_id).await {
                                 Ok(w) if w.enabled => w,
                                 Ok(_) => {
                                     return (
@@ -1206,6 +1205,10 @@ pub async fn prepare_gateway(
                                         .into_response();
                                 },
                             };
+
+                            #[allow(unused_mut)]
+                            // Secret decryption mutates the webhook only when the vault feature is enabled.
+                            let mut webhook = webhook;
 
                             #[cfg(feature = "vault")]
                             if let Err(error) = moltis_gateway::webhooks::decrypt_webhook_secrets(
