@@ -816,6 +816,7 @@ pub async fn run_agent_loop_with_context(
     let config = moltis_config::discover_and_load();
     let max_tool_result_bytes = config.tools.max_tool_result_bytes;
     let max_auto_continues = config.tools.agent_max_auto_continues;
+    let auto_continue_min_tool_calls = config.tools.agent_auto_continue_min_tool_calls;
     let base_max_iterations = resolve_agent_max_iterations(config.tools.agent_max_iterations);
     // Lazy mode needs extra iterations for tool_search discovery round-trips.
     let max_iterations = if config.tools.registry_mode == moltis_config::ToolRegistryMode::Lazy {
@@ -1135,7 +1136,9 @@ pub async fn run_agent_loop_with_context(
         if response.tool_calls.is_empty() {
             // Auto-continue: if the model made tool calls earlier in this run
             // and we haven't exhausted nudges, ask it to keep going.
-            if total_tool_calls >= 3 && auto_continue_count < max_auto_continues {
+            if total_tool_calls >= auto_continue_min_tool_calls
+                && auto_continue_count < max_auto_continues
+            {
                 auto_continue_count += 1;
                 info!(
                     iterations,
@@ -1399,6 +1402,7 @@ pub async fn run_agent_loop_streaming(
     let config = moltis_config::discover_and_load();
     let max_tool_result_bytes = config.tools.max_tool_result_bytes;
     let max_auto_continues = config.tools.agent_max_auto_continues;
+    let auto_continue_min_tool_calls = config.tools.agent_auto_continue_min_tool_calls;
     let base_max_iterations = resolve_agent_max_iterations(config.tools.agent_max_iterations);
     // Lazy mode needs extra iterations for tool_search discovery round-trips.
     let max_iterations = if config.tools.registry_mode == moltis_config::ToolRegistryMode::Lazy {
@@ -1833,7 +1837,9 @@ pub async fn run_agent_loop_streaming(
         if tool_calls.is_empty() {
             // Auto-continue: if the model made tool calls earlier in this run
             // and we haven't exhausted nudges, ask it to keep going.
-            if total_tool_calls >= 3 && auto_continue_count < max_auto_continues {
+            if total_tool_calls >= auto_continue_min_tool_calls
+                && auto_continue_count < max_auto_continues
+            {
                 auto_continue_count += 1;
                 info!(
                     iterations,
@@ -6730,8 +6736,8 @@ mod tests {
 
     /// Provider that makes 3 tool calls (one per iteration), then stops with
     /// text repeatedly. Used to test that auto-continue nudges the model and
-    /// caps at the configured limit. The threshold for auto-continue is
-    /// `total_tool_calls >= 3`, so we need at least 3 tool calls.
+    /// caps at the configured limit. The default threshold for auto-continue
+    /// is `agent_auto_continue_min_tool_calls = 3`, so we need at least 3 tool calls.
     struct AutoContinueProvider {
         call_count: std::sync::atomic::AtomicUsize,
     }
