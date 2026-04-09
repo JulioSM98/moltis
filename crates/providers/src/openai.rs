@@ -696,6 +696,8 @@ impl OpenAiProvider {
                     && !content.is_empty()
                 {
                     system_parts.push(content.to_string());
+                } else if msg.get("content").is_some() {
+                    warn!("MiniMax system message has non-string content; it will be dropped");
                 }
                 return false;
             }
