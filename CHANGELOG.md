@@ -19,6 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260409.01] - 2026-04-09
+### Added
+- [matrix] Add slash command support
+- [models] Make model detection opt-in and add stop button
+
+
+### Fixed
+- [matrix] Match help command by exact name, not prefix
+- [models] Abort probe tasks on cancel, show feedback, await RPC
+- [tls] Include lan bind SANs in auto-generated certs
+- [tls] Address PR review feedback
+- [agents] Use system message for auto-continue nudge instead of user message
+- [common] Add default User-Agent header to shared HTTP client
+- [common] Use MOLTIS_VERSION for default user-agent and apply headers in apply_proxy
+- [agents] Keep auto-continue nudge as user message
+- [provider-setup] Include lmstudio in known_providers and replace ollama name checks
+- [provider-setup] Add dedicated local_only field to KnownProvider
+- Harden superset setup envrc handling
+
 ## [20260408.01] - 2026-04-08
 ### Added
 - [agents] Auto-continue when model stops mid-task + max iterations UX
