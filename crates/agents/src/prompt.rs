@@ -713,27 +713,27 @@ fn append_workspace_files_section(
 
     let mut statuses = Vec::new();
     prompt.push_str("## Workspace Files\n\n");
-    if let Some(agents_md) = agents_text {
-        prompt.push_str("### AGENTS.md (workspace)\n\n");
-        statuses.push(append_truncated_text_block(
-            prompt,
-            "AGENTS.md",
-            agents_md,
-            limits.workspace_file_max_chars,
-            "\n*(AGENTS.md truncated for prompt size.)*\n",
-        ));
-        prompt.push_str("\n\n");
-    }
-    if let Some(tools_md) = tools_text {
-        prompt.push_str("### TOOLS.md (workspace)\n\n");
-        statuses.push(append_truncated_text_block(
-            prompt,
-            "TOOLS.md",
-            tools_md,
-            limits.workspace_file_max_chars,
-            "\n*(TOOLS.md truncated for prompt size.)*\n",
-        ));
-        prompt.push_str("\n\n");
+    for (label, text) in [("AGENTS.md", agents_text), ("TOOLS.md", tools_text)] {
+        if let Some(md) = text {
+            prompt.push_str(&format!("### {label} (workspace)\n\n"));
+            let status = append_truncated_text_block(
+                prompt,
+                label,
+                md,
+                limits.workspace_file_max_chars,
+                &format!("\n*({label} truncated for prompt size.)*\n"),
+            );
+            if status.truncated {
+                tracing::warn!(
+                    file = label,
+                    original_chars = status.original_chars,
+                    limit = status.limit_chars,
+                    "workspace file truncated for prompt size"
+                );
+            }
+            statuses.push(status);
+            prompt.push_str("\n\n");
+        }
     }
 
     statuses
