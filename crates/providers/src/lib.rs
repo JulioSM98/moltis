@@ -78,6 +78,7 @@ pub struct DiscoveredModel {
     /// Flagged by the provider as a recommended/flagship model.
     /// Used to surface the most relevant models in the UI.
     pub recommended: bool,
+    pub capabilities: Option<ModelCapabilities>,
 }
 
 impl DiscoveredModel {
@@ -87,6 +88,7 @@ impl DiscoveredModel {
             display_name: display_name.into(),
             created_at: None,
             recommended: false,
+            capabilities: None,
         }
     }
 
@@ -97,6 +99,11 @@ impl DiscoveredModel {
 
     pub fn with_recommended(mut self, recommended: bool) -> Self {
         self.recommended = recommended;
+        self
+    }
+
+    pub fn with_capabilities(mut self, capabilities: ModelCapabilities) -> Self {
+        self.capabilities = Some(capabilities);
         self
     }
 }
@@ -252,6 +259,7 @@ fn merge_preferred_and_discovered_models(
                 display_name: d.display_name.clone(),
                 created_at: d.created_at,
                 recommended: d.recommended,
+                capabilities: d.capabilities,
             }
         } else {
             DiscoveredModel::new(model_id.clone(), model_id)
@@ -295,6 +303,7 @@ fn merge_discovered_with_fallback_catalog(
                 display_name,
                 created_at: m.created_at,
                 recommended: m.recommended,
+                capabilities: m.capabilities,
             }
         })
         .collect()
@@ -1087,11 +1096,42 @@ pub fn supports_reasoning_for_model(model_id: &str) -> bool {
     if id.starts_with("gemini-2.5") {
         return true;
     }
+    // OpenAI GPT-5.x models support reasoning_effort
+    if id.starts_with("gpt-5") {
+        return true;
+    }
     // DeepSeek R1 / reasoning models
     if id.contains("deepseek-r1") || id.contains("deepseek-reasoner") {
         return true;
     }
     false
+}
+
+/// Capabilities that a model is known to support.
+///
+/// Populated at registration time from the pattern-matching heuristics.
+/// Carried on `ModelInfo` so downstream code can check capabilities
+/// without a provider instance or re-running the heuristic.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct ModelCapabilities {
+    /// Supports OpenAI-style function/tool calling.
+    pub tools: bool,
+    /// Supports image/vision inputs.
+    pub vision: bool,
+    /// Supports extended thinking / reasoning effort.
+    pub reasoning: bool,
+}
+
+impl ModelCapabilities {
+    /// Infer capabilities from the model ID using the pattern-matching heuristics.
+    #[must_use]
+    pub fn infer(model_id: &str) -> Self {
+        Self {
+            tools: supports_tools_for_model(model_id),
+            vision: supports_vision_for_model(model_id),
+            reasoning: supports_reasoning_for_model(model_id),
+        }
+    }
 }
 
 /// Info about an available model.
@@ -1105,6 +1145,8 @@ pub struct ModelInfo {
     pub created_at: Option<i64>,
     /// Flagged by the provider as a recommended/flagship model.
     pub recommended: bool,
+    /// Model capabilities, resolved at registration time.
+    pub capabilities: ModelCapabilities,
 }
 
 /// Known Anthropic Claude models (model_id, display_name).
@@ -1558,6 +1600,7 @@ impl ProviderRegistry {
                     display_name: source.display_name(&model.id, &model.display_name),
                     created_at: model.created_at,
                     recommended: model.recommended,
+                    capabilities: model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id)),
                 },
                 provider,
             );
@@ -1598,6 +1641,7 @@ impl ProviderRegistry {
         let new_entries: Vec<(ModelInfo, Arc<dyn LlmProvider>)> = next_models
             .into_iter()
             .map(|model| {
+                let caps = model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id));
                 (
                     ModelInfo {
                         id: model.id.clone(),
@@ -1605,6 +1649,7 @@ impl ProviderRegistry {
                         display_name: source.display_name(&model.id, &model.display_name),
                         created_at: model.created_at,
                         recommended: model.recommended,
+                        capabilities: caps,
                     },
                     source.build_provider(model.id, config),
                 )
@@ -1657,6 +1702,7 @@ impl ProviderRegistry {
         let mut added = 0usize;
 
         for model in models {
+            let caps = model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id));
             let (model_id, display_name, created_at, recommended) = (
                 model.id,
                 model.display_name,
@@ -1682,6 +1728,7 @@ impl ProviderRegistry {
                     display_name,
                     created_at,
                     recommended,
+                    capabilities: caps,
                 },
                 provider,
             );
@@ -1703,6 +1750,7 @@ impl ProviderRegistry {
         let new_entries: Vec<(ModelInfo, Arc<dyn LlmProvider>)> = models
             .into_iter()
             .map(|model| {
+                let caps = model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id));
                 let provider = Arc::new(
                     anthropic::AnthropicProvider::with_alias(
                         key.clone(),
@@ -1719,6 +1767,7 @@ impl ProviderRegistry {
                         display_name: model.display_name,
                         created_at: model.created_at,
                         recommended: model.recommended,
+                        capabilities: caps,
                     },
                     provider as Arc<dyn LlmProvider>,
                 )
@@ -2158,6 +2207,7 @@ impl ProviderRegistry {
                         display_name: model.display_name.clone(),
                         created_at: model.created_at,
                         recommended: model.recommended,
+                        capabilities: model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id)),
                     },
                     provider,
                 );
@@ -2252,6 +2302,7 @@ impl ProviderRegistry {
                         display_name: model.display_name.clone(),
                         created_at: model.created_at,
                         recommended: model.recommended,
+                        capabilities: model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id)),
                     },
                     Arc::new(oai),
                 );
@@ -2303,6 +2354,7 @@ impl ProviderRegistry {
                         display_name: model.display_name.clone(),
                         created_at: model.created_at,
                         recommended: model.recommended,
+                        capabilities: model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id)),
                     },
                     Arc::new(oai),
                 );
@@ -2367,11 +2419,12 @@ impl ProviderRegistry {
             ));
             self.register(
                 ModelInfo {
-                    id: model_id,
+                    id: model_id.clone(),
                     provider: genai_provider_name,
                     display_name: display_name.into(),
                     created_at: None,
                     recommended: false,
+                    capabilities: ModelCapabilities::infer(&model_id),
                 },
                 provider,
             );
@@ -2418,11 +2471,12 @@ impl ProviderRegistry {
         ));
         self.register(
             ModelInfo {
-                id: model_id,
+                id: model_id.clone(),
                 provider: provider_label,
                 display_name: "GPT-4o (async-openai)".into(),
                 created_at: None,
                 recommended: false,
+                capabilities: ModelCapabilities::infer(&model_id),
             },
             provider,
         );
@@ -2570,6 +2624,7 @@ impl ProviderRegistry {
         };
         let models = merge_preferred_and_discovered_models(preferred, discovered);
         for model in models {
+            let caps = model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id));
             let (model_id, display_name, created_at, recommended) = (
                 model.id,
                 model.display_name,
@@ -2587,6 +2642,7 @@ impl ProviderRegistry {
                     display_name,
                     created_at,
                     recommended,
+                    capabilities: caps,
                 },
                 provider,
             );
@@ -2662,11 +2718,12 @@ impl ProviderRegistry {
             let provider = Arc::new(local_llm::LocalLlmProvider::new(llm_config));
             self.register(
                 ModelInfo {
-                    id: model_id,
+                    id: model_id.clone(),
                     provider: "local-llm".into(),
                     display_name,
                     created_at: None,
                     recommended: false,
+                    capabilities: ModelCapabilities::infer(&model_id),
                 },
                 provider,
             );
@@ -2743,6 +2800,7 @@ impl ProviderRegistry {
             let models = merge_preferred_and_discovered_models(preferred, discovered);
 
             for model in models {
+                let caps = model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id));
                 let (model_id, display_name, created_at, recommended) = (
                     model.id,
                     model.display_name,
@@ -2768,6 +2826,7 @@ impl ProviderRegistry {
                         display_name,
                         created_at,
                         recommended,
+                        capabilities: caps,
                     },
                     provider,
                 );
@@ -2876,6 +2935,7 @@ impl ProviderRegistry {
             };
 
             for model in models {
+                let caps = model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id));
                 let (model_id, display_name, created_at, recommended) = (
                     model.id,
                     model.display_name,
@@ -2921,6 +2981,7 @@ impl ProviderRegistry {
                         display_name,
                         created_at,
                         recommended,
+                        capabilities: caps,
                     },
                     provider,
                 );
@@ -2975,6 +3036,7 @@ impl ProviderRegistry {
 
             let custom_tool_mode = entry.tool_mode;
             for model in models {
+                let caps = model.capabilities.unwrap_or_else(|| ModelCapabilities::infer(&model.id));
                 let (model_id, display_name, created_at, recommended) = (
                     model.id,
                     model.display_name,
@@ -3006,6 +3068,7 @@ impl ProviderRegistry {
                         display_name,
                         created_at,
                         recommended,
+                        capabilities: caps,
                     },
                     provider,
                 );
@@ -3078,7 +3141,7 @@ impl ProviderRegistry {
         let mut result = Vec::with_capacity(self.models.len() * 4);
         for m in &self.models {
             result.push(m.clone());
-            if supports_reasoning_for_model(&m.id) {
+            if m.capabilities.reasoning {
                 for &(suffix, _) in REASONING_SUFFIXES {
                     let label = suffix.strip_prefix("reasoning-").unwrap_or(suffix);
                     result.push(ModelInfo {
@@ -3087,6 +3150,7 @@ impl ProviderRegistry {
                         display_name: format!("{} ({label} reasoning)", m.display_name),
                         created_at: m.created_at,
                         recommended: false,
+                        capabilities: ModelCapabilities { reasoning: true, ..m.capabilities },
                     });
                 }
             }
@@ -3627,6 +3691,7 @@ mod tests {
                 display_name: "Test Model".into(),
                 created_at: None,
                 recommended: false,
+                capabilities: ModelCapabilities::default(),
             },
             provider,
         );
@@ -3656,6 +3721,7 @@ mod tests {
                 display_name: "GPT-5.2 Codex (Codex/OAuth)".into(),
                 created_at: None,
                 recommended: false,
+                capabilities: ModelCapabilities::default(),
             },
             provider,
         );
@@ -4070,6 +4136,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
+                    capabilities: ModelCapabilities::default(),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4126,6 +4193,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
+                    capabilities: ModelCapabilities::default(),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4157,6 +4225,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
+                    capabilities: ModelCapabilities::default(),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4188,6 +4257,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
+                    capabilities: ModelCapabilities::default(),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4764,6 +4834,7 @@ mod tests {
                 display_name: "Claude Opus 4.5".into(),
                 created_at: None,
                 recommended: false,
+                capabilities: ModelCapabilities::default(),
             },
             Arc::new(anthropic::AnthropicProvider::new(
                 secret("key"),
@@ -4796,6 +4867,7 @@ mod tests {
                 display_name: "Claude Opus 4.5".into(),
                 created_at: None,
                 recommended: false,
+                capabilities: ModelCapabilities { reasoning: true, ..ModelCapabilities::default() },
             },
             Arc::new(anthropic::AnthropicProvider::new(
                 secret("key"),
@@ -4810,6 +4882,7 @@ mod tests {
                 display_name: "GPT-4o".into(),
                 created_at: None,
                 recommended: false,
+                capabilities: ModelCapabilities::default(),
             },
             Arc::new(openai::OpenAiProvider::new(
                 secret("key"),
@@ -5018,11 +5091,15 @@ mod tests {
         assert!(supports_reasoning_for_model("o1-mini"));
         assert!(supports_reasoning_for_model("gemini-2.5-flash"));
         assert!(supports_reasoning_for_model("deepseek-r1"));
+        assert!(supports_reasoning_for_model("gpt-5.4"));
+        assert!(supports_reasoning_for_model("gpt-5.4-mini"));
+        assert!(supports_reasoning_for_model("gpt-5"));
+        assert!(supports_reasoning_for_model("gpt-5-mini"));
+        assert!(supports_reasoning_for_model("gpt-5.2"));
 
         // Models that don't support reasoning
         assert!(!supports_reasoning_for_model("claude-sonnet-4-20250514"));
         assert!(!supports_reasoning_for_model("gpt-4o"));
-        assert!(!supports_reasoning_for_model("gpt-5.2"));
         assert!(!supports_reasoning_for_model("claude-3-haiku-20240307"));
     }
 

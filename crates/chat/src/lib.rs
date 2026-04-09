@@ -10143,6 +10143,7 @@ mod tests {
                 display_name: "Auto Compact Test".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(AutoCompactRegressionProvider {
                 context_window: 100,
@@ -11063,6 +11064,7 @@ mod tests {
             display_name: "GPT 5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "anthropic::claude-opus-4-5".into(),
@@ -11070,6 +11072,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
@@ -11077,6 +11080,7 @@ mod tests {
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
 
         let order =
@@ -11095,6 +11099,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "anthropic::claude-sonnet-4-5-20250929".into(),
@@ -11102,6 +11107,7 @@ mod tests {
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
@@ -11109,6 +11115,7 @@ mod tests {
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
 
         let order =
@@ -11127,6 +11134,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
@@ -11134,6 +11142,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "anthropic::claude-sonnet-4-5-20250929".into(),
@@ -11141,6 +11150,7 @@ mod tests {
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
 
         let order = LiveModelService::build_priority_order(&[]);
@@ -11160,6 +11170,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
@@ -11167,6 +11178,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
 
         let order = LiveModelService::build_priority_order(&["openai::gpt-5.2".into()]);
@@ -11183,6 +11195,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
@@ -11190,6 +11203,7 @@ mod tests {
             display_name: "GPT 5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
@@ -11197,6 +11211,7 @@ mod tests {
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
 
         let patterns: Vec<String> = vec!["opus".into()];
@@ -11213,6 +11228,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         assert!(model_matches_allowlist(&m, &[]));
     }
@@ -11225,6 +11241,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
 
         // Uppercase pattern matches lowercase model key.
@@ -11244,6 +11261,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
 
         let patterns = vec![normalize_model_key("gpt 5.2")];
@@ -11261,6 +11279,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let extended = moltis_providers::ModelInfo {
             id: "openai::gpt-5.2-chat-latest".into(),
@@ -11268,6 +11287,7 @@ mod tests {
             display_name: "GPT-5.2 Chat Latest".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let patterns = vec![normalize_model_key("gpt 5.2")];
 
@@ -11283,6 +11303,7 @@ mod tests {
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let patterns = vec![normalize_model_key("sonnet 4.5")];
 
@@ -11297,6 +11318,7 @@ mod tests {
             display_name: "Qwen2.5 Coder 7B".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let ollama = moltis_providers::ModelInfo {
             id: "ollama::llama3.1:8b".into(),
@@ -11304,6 +11326,7 @@ mod tests {
             display_name: "Llama 3.1 8B".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let patterns = vec![normalize_model_key("opus")];
 
@@ -11319,6 +11342,7 @@ mod tests {
             display_name: "Llama 3.1 8B".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::default(),
         };
         let patterns = vec![normalize_model_key("opus")];
 
@@ -11339,6 +11363,7 @@ mod tests {
                 display_name: "Claude Opus 4.5".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities { reasoning: true, ..moltis_providers::ModelCapabilities::default() },
             },
             Arc::new(StaticProvider {
                 name: "anthropic".to_string(),
@@ -11352,6 +11377,7 @@ mod tests {
                 display_name: "GPT 5.2".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "openai-codex".to_string(),
@@ -11365,6 +11391,7 @@ mod tests {
                 display_name: "Gemini 3 Flash".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "google".to_string(),
@@ -11416,6 +11443,7 @@ mod tests {
                 display_name: "GPT-5.3".to_string(),
                 created_at: Some(recent_gpt),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11429,6 +11457,7 @@ mod tests {
                 display_name: "babbage-002".to_string(),
                 created_at: Some(recent_babbage),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11442,6 +11471,7 @@ mod tests {
                 display_name: "Claude Opus".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "anthropic".to_string(),
@@ -11492,6 +11522,7 @@ mod tests {
                 display_name: "GPT 5.2".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "openai-codex".to_string(),
@@ -11505,6 +11536,7 @@ mod tests {
                 display_name: "Llama 3.1 8B".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "ollama".to_string(),
@@ -11604,6 +11636,7 @@ mod tests {
                 display_name: "Unit Test Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "unit-test-provider".to_string(),
@@ -11676,6 +11709,7 @@ mod tests {
                 display_name: "Old Model".to_string(),
                 created_at: Some(two_years_ago),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test".to_string(),
@@ -11689,6 +11723,7 @@ mod tests {
                 display_name: "New Model".to_string(),
                 created_at: Some(recent),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test".to_string(),
@@ -11744,6 +11779,7 @@ mod tests {
                 display_name: "Old Model".to_string(),
                 created_at: Some(two_years_ago),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test".to_string(),
@@ -11829,6 +11865,7 @@ mod tests {
                 display_name: "GPT 5.2 Codex".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11842,6 +11879,7 @@ mod tests {
                 display_name: "GPT 5".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11902,6 +11940,7 @@ mod tests {
                 display_name: "Test Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test-provider".to_string(),
@@ -12373,6 +12412,7 @@ mod tests {
                 display_name: "Auto Compact Test".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(AutoCompactRegressionProvider {
                 context_window: 100,
@@ -12611,6 +12651,7 @@ mod tests {
                 display_name: "Abort Then Continue".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             provider.clone(),
         );
@@ -12696,6 +12737,7 @@ mod tests {
                 display_name: "Streaming Text Tool".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StreamingTextToolProvider),
         );
@@ -12916,6 +12958,7 @@ mod tests {
                 display_name: "Slow Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(SlowStartProvider {
                 name: "local".to_string(),
@@ -12952,6 +12995,7 @@ mod tests {
                 display_name: "Stuck Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(SlowStartProvider {
                 name: "local".to_string(),
