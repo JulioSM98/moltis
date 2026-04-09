@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [20260409.04] - 2026-04-09
+### Added
+- [providers] Add Alibaba Cloud Coding Plan provider
+
+
+### Fixed
+- [ci] Avoid dynamic provider secrets
+
 ## [20260409.03] - 2026-04-09
 ### Removed
 - Remove redundant http client fallback check
