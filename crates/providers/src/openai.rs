@@ -2413,13 +2413,19 @@ mod tests {
             "lmstudio".to_string(),
         );
 
-        // Use stream_with_tools (agent loop path) to match production usage.
+        // Call stream_with_tools directly (with empty tools) to exercise the
+        // same SSE path the agent loop uses, while verifying realistic LM Studio
+        // metadata fields don't disrupt reasoning_content extraction.
         let mut stream =
             provider.stream_with_tools(vec![ChatMessage::user("Какая столица Италии?")], vec![]);
         let mut events = Vec::new();
         while let Some(event) = stream.next().await {
             events.push(event);
         }
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Error(_))),
+            "stream must not emit Error events for valid LM Studio SSE"
+        );
 
         // Collect reasoning and visible deltas.
         let reasoning: Vec<&str> = events
