@@ -1117,7 +1117,7 @@ pub fn supports_reasoning_for_model(model_id: &str) -> bool {
 /// Populated at registration time from the pattern-matching heuristics.
 /// Carried on `ModelInfo` so downstream code can check capabilities
 /// without a provider instance or re-running the heuristic.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ModelCapabilities {
     /// Supports OpenAI-style function/tool calling.
     pub tools: bool,
@@ -3739,7 +3739,7 @@ mod tests {
                 display_name: "GPT-5.2 Codex (Codex/OAuth)".into(),
                 created_at: None,
                 recommended: false,
-                capabilities: ModelCapabilities::default(),
+                capabilities: ModelCapabilities::infer("gpt-5.2-codex"),
             },
             provider,
         );
@@ -4154,7 +4154,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
-                    capabilities: ModelCapabilities::default(),
+                    capabilities: ModelCapabilities::infer(id),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4211,7 +4211,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
-                    capabilities: ModelCapabilities::default(),
+                    capabilities: ModelCapabilities::infer(id),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4243,7 +4243,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
-                    capabilities: ModelCapabilities::default(),
+                    capabilities: ModelCapabilities::infer(id),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4275,7 +4275,7 @@ mod tests {
                     display_name: id.into(),
                     created_at: None,
                     recommended: false,
-                    capabilities: ModelCapabilities::default(),
+                    capabilities: ModelCapabilities::infer(id),
                 },
                 Arc::new(openai::OpenAiProvider::new_with_name(
                     secret("k"),
@@ -4855,7 +4855,7 @@ mod tests {
                 display_name: "Claude Opus 4.5".into(),
                 created_at: None,
                 recommended: false,
-                capabilities: ModelCapabilities::default(),
+                capabilities: ModelCapabilities::infer("claude-opus-4-5-20251101"),
             },
             Arc::new(anthropic::AnthropicProvider::new(
                 secret("key"),
@@ -4888,7 +4888,7 @@ mod tests {
                 display_name: "Claude Opus 4.5".into(),
                 created_at: None,
                 recommended: false,
-                capabilities: ModelCapabilities { reasoning: true, ..ModelCapabilities::default() },
+                capabilities: ModelCapabilities::infer("claude-opus-4-5-20251101"),
             },
             Arc::new(anthropic::AnthropicProvider::new(
                 secret("key"),
@@ -4903,7 +4903,7 @@ mod tests {
                 display_name: "GPT-4o".into(),
                 created_at: None,
                 recommended: false,
-                capabilities: ModelCapabilities::default(),
+                capabilities: ModelCapabilities::infer("gpt-4o"),
             },
             Arc::new(openai::OpenAiProvider::new(
                 secret("key"),
