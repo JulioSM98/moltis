@@ -29,9 +29,10 @@ use {
         model::{StreamEvent, values_to_chat_messages},
         multimodal::parse_data_uri,
         prompt::{
-            PromptHostRuntimeContext, PromptNodeInfo, PromptNodesRuntimeContext,
+            PromptBuildLimits, PromptHostRuntimeContext, PromptNodeInfo, PromptNodesRuntimeContext,
             PromptRuntimeContext, PromptSandboxRuntimeContext, VOICE_REPLY_SUFFIX,
-            build_system_prompt_minimal_runtime, build_system_prompt_with_session_runtime,
+            build_system_prompt_minimal_runtime_details,
+            build_system_prompt_with_session_runtime_details,
         },
         runner::{RunnerEvent, run_agent_loop_streaming},
         tool_registry::{AgentTool, ToolRegistry},
@@ -1067,6 +1068,12 @@ fn load_prompt_persona_for_session(session_entry: Option<&SessionEntry>) -> Prom
     load_prompt_persona_for_agent(&agent_id)
 }
 
+fn prompt_build_limits_from_config(config: &moltis_config::MoltisConfig) -> PromptBuildLimits {
+    PromptBuildLimits {
+        workspace_file_max_chars: config.chat.workspace_file_max_chars,
+    }
+}
+
 #[derive(Default)]
 struct ChannelRuntimeContext {
     surface: Option<String>,
@@ -1238,16 +1245,10 @@ async fn build_prompt_runtime_context(
         })
     };
 
-    let workspace_file_max_chars = {
-        let cfg = moltis_config::discover_and_load();
-        Some(cfg.chat.workspace_file_max_chars)
-    };
-
     PromptRuntimeContext {
         host: host_ctx,
         sandbox: sandbox_ctx,
         nodes: nodes_ctx,
-        workspace_file_max_chars,
     }
 }
 
@@ -1811,13 +1812,14 @@ impl ModelService for LiveModelService {
                 }
             })
             .map(|m| {
-                let supports_tools = reg.get(&m.id).is_some_and(|p| p.supports_tools());
                 let preferred = Self::priority_rank(&order, m) != usize::MAX;
                 serde_json::json!({
                     "id": m.id,
                     "provider": m.provider,
                     "displayName": m.display_name,
-                    "supportsTools": supports_tools,
+                    "supportsTools": m.capabilities.tools,
+                    "supportsVision": m.capabilities.vision,
+                    "supportsReasoning": m.capabilities.reasoning,
                     "preferred": preferred,
                     "recommended": m.recommended,
                     "createdAt": m.created_at,
@@ -1847,14 +1849,15 @@ impl ModelService for LiveModelService {
             .iter()
             .copied()
             .map(|m| {
-                let supports_tools = reg.get(&m.id).is_some_and(|p| p.supports_tools());
                 let preferred = Self::priority_rank(&order, m) != usize::MAX;
                 let unsupported = disabled.unsupported_info(&m.id);
                 serde_json::json!({
                     "id": m.id,
                     "provider": m.provider,
                     "displayName": m.display_name,
-                    "supportsTools": supports_tools,
+                    "supportsTools": m.capabilities.tools,
+                    "supportsVision": m.capabilities.vision,
+                    "supportsReasoning": m.capabilities.reasoning,
                     "preferred": preferred,
                     "recommended": m.recommended,
                     "createdAt": m.created_at,
@@ -4921,8 +4924,9 @@ impl ChatService for LiveChatService {
         let tool_count = filtered_registry.list_schemas().len();
 
         // Build the system prompt.
-        let system_prompt = if tools_enabled {
-            build_system_prompt_with_session_runtime(
+        let prompt_limits = prompt_build_limits_from_config(&persona.config);
+        let prompt_build = if tools_enabled {
+            build_system_prompt_with_session_runtime_details(
                 &filtered_registry,
                 native_tools,
                 project_context.as_deref(),
@@ -4934,9 +4938,10 @@ impl ChatService for LiveChatService {
                 persona.tools_text.as_deref(),
                 Some(&runtime_context),
                 persona.memory_text.as_deref(),
+                prompt_limits,
             )
         } else {
-            build_system_prompt_minimal_runtime(
+            build_system_prompt_minimal_runtime_details(
                 project_context.as_deref(),
                 Some(&persona.identity),
                 Some(&persona.user),
@@ -4945,14 +4950,20 @@ impl ChatService for LiveChatService {
                 persona.tools_text.as_deref(),
                 Some(&runtime_context),
                 persona.memory_text.as_deref(),
+                prompt_limits,
             )
         };
 
+        let truncated = prompt_build.metadata.truncated();
+        let workspace_files = prompt_build.metadata.workspace_files.clone();
+        let system_prompt = prompt_build.prompt;
         let char_count = system_prompt.len();
 
         Ok(serde_json::json!({
             "prompt": system_prompt,
             "charCount": char_count,
+            "truncated": truncated,
+            "workspaceFiles": workspace_files,
             "native_tools": native_tools,
             "tools_enabled": tools_enabled,
             "tool_mode": format!("{:?}", tool_mode),
@@ -5034,8 +5045,9 @@ impl ChatService for LiveChatService {
         };
 
         // Build the system prompt.
-        let system_prompt = if tools_enabled {
-            build_system_prompt_with_session_runtime(
+        let prompt_limits = prompt_build_limits_from_config(&persona.config);
+        let prompt_build = if tools_enabled {
+            build_system_prompt_with_session_runtime_details(
                 &filtered_registry,
                 native_tools,
                 project_context.as_deref(),
@@ -5047,9 +5059,10 @@ impl ChatService for LiveChatService {
                 persona.tools_text.as_deref(),
                 Some(&runtime_context),
                 persona.memory_text.as_deref(),
+                prompt_limits,
             )
         } else {
-            build_system_prompt_minimal_runtime(
+            build_system_prompt_minimal_runtime_details(
                 project_context.as_deref(),
                 Some(&persona.identity),
                 Some(&persona.user),
@@ -5058,31 +5071,14 @@ impl ChatService for LiveChatService {
                 persona.tools_text.as_deref(),
                 Some(&runtime_context),
                 persona.memory_text.as_deref(),
+                prompt_limits,
             )
         };
 
+        let truncated = prompt_build.metadata.truncated();
+        let workspace_files = prompt_build.metadata.workspace_files.clone();
+        let system_prompt = prompt_build.prompt;
         let system_prompt_chars = system_prompt.len();
-
-        // Compute workspace file truncation metadata.
-        let ws_limit = runtime_context
-            .workspace_file_max_chars
-            .unwrap_or_else(|| moltis_config::ChatConfig::default().workspace_file_max_chars);
-        let workspace_files: Vec<Value> = [
-            ("AGENTS.md", persona.agents_text.as_deref()),
-            ("TOOLS.md", persona.tools_text.as_deref()),
-        ]
-        .into_iter()
-        .filter_map(|(name, text)| {
-            let text = text?;
-            let chars = text.chars().count();
-            Some(serde_json::json!({
-                "file": name,
-                "chars": chars,
-                "limit": ws_limit,
-                "truncated": chars > ws_limit,
-            }))
-        })
-        .collect();
 
         // Keep raw assistant outputs (including provider/model/token metadata)
         // so the UI can show a debug view of what the LLM actually returned.
@@ -5111,6 +5107,7 @@ impl ChatService for LiveChatService {
             "messageCount": message_count,
             "systemPromptChars": system_prompt_chars,
             "totalChars": total_chars,
+            "truncated": truncated,
             "workspaceFiles": workspace_files,
         }))
     }
@@ -6137,8 +6134,9 @@ async fn run_with_tools(
     // - Native tools: full prompt with tool schemas sent via API
     // - Text tools: full prompt with tool schemas embedded + call guidance
     // - Off: minimal prompt without tools
+    let prompt_limits = prompt_build_limits_from_config(&persona.config);
     let system_prompt = if tools_enabled {
-        build_system_prompt_with_session_runtime(
+        build_system_prompt_with_session_runtime_details(
             &filtered_registry,
             native_tools,
             project_context,
@@ -6150,9 +6148,11 @@ async fn run_with_tools(
             persona.tools_text.as_deref(),
             runtime_context,
             persona.memory_text.as_deref(),
+            prompt_limits,
         )
+        .prompt
     } else {
-        build_system_prompt_minimal_runtime(
+        build_system_prompt_minimal_runtime_details(
             project_context,
             Some(&persona.identity),
             Some(&persona.user),
@@ -6161,7 +6161,9 @@ async fn run_with_tools(
             persona.tools_text.as_deref(),
             runtime_context,
             persona.memory_text.as_deref(),
+            prompt_limits,
         )
+        .prompt
     };
 
     // Layer 1: instruct the LLM to write speech-friendly output when voice is active.
@@ -7197,7 +7199,7 @@ async fn run_streaming(
     let run_started = Instant::now();
     let persona = load_prompt_persona_for_agent(agent_id);
 
-    let system_prompt = build_system_prompt_minimal_runtime(
+    let system_prompt = build_system_prompt_minimal_runtime_details(
         project_context,
         Some(&persona.identity),
         Some(&persona.user),
@@ -7206,7 +7208,9 @@ async fn run_streaming(
         persona.tools_text.as_deref(),
         runtime_context,
         persona.memory_text.as_deref(),
-    );
+        prompt_build_limits_from_config(&persona.config),
+    )
+    .prompt;
 
     // Layer 1: instruct the LLM to write speech-friendly output when voice is active.
     let system_prompt = apply_voice_reply_suffix(system_prompt, desired_reply_medium);
@@ -10171,6 +10175,7 @@ mod tests {
                 display_name: "Auto Compact Test".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(AutoCompactRegressionProvider {
                 context_window: 100,
@@ -11091,6 +11096,7 @@ mod tests {
             display_name: "GPT 5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "anthropic::claude-opus-4-5".into(),
@@ -11098,6 +11104,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("claude-opus-4-5"),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
@@ -11105,6 +11112,7 @@ mod tests {
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gemini-3-flash"),
         };
 
         let order =
@@ -11123,6 +11131,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "anthropic::claude-sonnet-4-5-20250929".into(),
@@ -11130,6 +11139,7 @@ mod tests {
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("claude-sonnet-4-5-20250929"),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
@@ -11137,6 +11147,7 @@ mod tests {
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gemini-3-flash"),
         };
 
         let order =
@@ -11155,6 +11166,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
@@ -11162,6 +11174,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "anthropic::claude-sonnet-4-5-20250929".into(),
@@ -11169,6 +11182,7 @@ mod tests {
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("claude-sonnet-4-5-20250929"),
         };
 
         let order = LiveModelService::build_priority_order(&[]);
@@ -11188,6 +11202,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
@@ -11195,6 +11210,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
 
         let order = LiveModelService::build_priority_order(&["openai::gpt-5.2".into()]);
@@ -11211,6 +11227,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("claude-opus-4-5"),
         };
         let m2 = moltis_providers::ModelInfo {
             id: "openai-codex::gpt-5.2".into(),
@@ -11218,6 +11235,7 @@ mod tests {
             display_name: "GPT 5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
         let m3 = moltis_providers::ModelInfo {
             id: "google::gemini-3-flash".into(),
@@ -11225,6 +11243,7 @@ mod tests {
             display_name: "Gemini 3 Flash".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gemini-3-flash"),
         };
 
         let patterns: Vec<String> = vec!["opus".into()];
@@ -11241,6 +11260,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("claude-opus-4-5"),
         };
         assert!(model_matches_allowlist(&m, &[]));
     }
@@ -11253,6 +11273,7 @@ mod tests {
             display_name: "Claude Opus 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("claude-opus-4-5"),
         };
 
         // Uppercase pattern matches lowercase model key.
@@ -11272,6 +11293,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
 
         let patterns = vec![normalize_model_key("gpt 5.2")];
@@ -11289,6 +11311,7 @@ mod tests {
             display_name: "GPT-5.2".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
         };
         let extended = moltis_providers::ModelInfo {
             id: "openai::gpt-5.2-chat-latest".into(),
@@ -11296,6 +11319,7 @@ mod tests {
             display_name: "GPT-5.2 Chat Latest".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2-chat-latest"),
         };
         let patterns = vec![normalize_model_key("gpt 5.2")];
 
@@ -11311,6 +11335,7 @@ mod tests {
             display_name: "Claude Sonnet 4.5".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("claude-sonnet-4-5"),
         };
         let patterns = vec![normalize_model_key("sonnet 4.5")];
 
@@ -11325,6 +11350,7 @@ mod tests {
             display_name: "Qwen2.5 Coder 7B".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("qwen2.5-coder-7b-q4_k_m"),
         };
         let ollama = moltis_providers::ModelInfo {
             id: "ollama::llama3.1:8b".into(),
@@ -11332,6 +11358,7 @@ mod tests {
             display_name: "Llama 3.1 8B".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("llama3.1:8b"),
         };
         let patterns = vec![normalize_model_key("opus")];
 
@@ -11347,6 +11374,7 @@ mod tests {
             display_name: "Llama 3.1 8B".into(),
             created_at: None,
             recommended: false,
+            capabilities: moltis_providers::ModelCapabilities::infer("llama3.1:8b"),
         };
         let patterns = vec![normalize_model_key("opus")];
 
@@ -11367,6 +11395,7 @@ mod tests {
                 display_name: "Claude Opus 4.5".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("claude-opus-4-5"),
             },
             Arc::new(StaticProvider {
                 name: "anthropic".to_string(),
@@ -11380,6 +11409,7 @@ mod tests {
                 display_name: "GPT 5.2".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
             },
             Arc::new(StaticProvider {
                 name: "openai-codex".to_string(),
@@ -11393,6 +11423,7 @@ mod tests {
                 display_name: "Gemini 3 Flash".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("gemini-3-flash"),
             },
             Arc::new(StaticProvider {
                 name: "google".to_string(),
@@ -11405,12 +11436,12 @@ mod tests {
 
         let result = service.list().await.unwrap();
         let arr = result.as_array().unwrap();
-        // 3 base models + 3 reasoning variants for claude-opus-4-5 = 6
-        assert_eq!(arr.len(), 6);
+        // 3 base models + 3×3 reasoning variants (claude-opus-4-5, gpt-5.2, gemini-3-flash) = 12
+        assert_eq!(arr.len(), 12);
 
         let result = service.list_all().await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 6);
+        assert_eq!(arr.len(), 12);
 
         // Verify reasoning variants are present with correct display names.
         let ids: Vec<&str> = arr.iter().filter_map(|m| m["id"].as_str()).collect();
@@ -11425,6 +11456,21 @@ mod tests {
             high["displayName"].as_str().unwrap(),
             "Claude Opus 4.5 (high reasoning)"
         );
+
+        // Verify capabilities are surfaced in JSON responses.
+        let claude = arr
+            .iter()
+            .find(|m| m["id"].as_str() == Some("anthropic::claude-opus-4-5"))
+            .unwrap();
+        assert_eq!(claude["supportsTools"].as_bool(), Some(true));
+        assert_eq!(claude["supportsVision"].as_bool(), Some(true));
+        assert_eq!(claude["supportsReasoning"].as_bool(), Some(true));
+
+        let gpt = arr
+            .iter()
+            .find(|m| m["id"].as_str() == Some("openai-codex::gpt-5.2"))
+            .unwrap();
+        assert_eq!(gpt["supportsReasoning"].as_bool(), Some(true));
     }
 
     #[tokio::test]
@@ -11444,6 +11490,7 @@ mod tests {
                 display_name: "GPT-5.3".to_string(),
                 created_at: Some(recent_gpt),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.3"),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11457,6 +11504,7 @@ mod tests {
                 display_name: "babbage-002".to_string(),
                 created_at: Some(recent_babbage),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("babbage-002"),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11470,6 +11518,7 @@ mod tests {
                 display_name: "Claude Opus".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("claude-opus"),
             },
             Arc::new(StaticProvider {
                 name: "anthropic".to_string(),
@@ -11482,7 +11531,8 @@ mod tests {
 
         let result = service.list().await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 3);
+        // 3 base models + 3 reasoning variants for gpt-5.3 = 6
+        assert_eq!(arr.len(), 6);
 
         // Verify createdAt is present and correct.
         let gpt = arr.iter().find(|m| m["id"] == "openai::gpt-5.3").unwrap();
@@ -11520,6 +11570,7 @@ mod tests {
                 display_name: "GPT 5.2".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2"),
             },
             Arc::new(StaticProvider {
                 name: "openai-codex".to_string(),
@@ -11533,6 +11584,7 @@ mod tests {
                 display_name: "Llama 3.1 8B".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("llama3.1:8b"),
             },
             Arc::new(StaticProvider {
                 name: "ollama".to_string(),
@@ -11545,7 +11597,8 @@ mod tests {
 
         let result = service.list().await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        // 2 base models + 3 reasoning variants for gpt-5.2 = 5
+        assert_eq!(arr.len(), 5);
         assert!(
             arr.iter()
                 .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("local-ai::llama3.1:8b"))
@@ -11553,7 +11606,7 @@ mod tests {
 
         let result = service.list_all().await.unwrap();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.len(), 5);
         assert!(
             arr.iter()
                 .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("local-ai::llama3.1:8b"))
@@ -11632,6 +11685,7 @@ mod tests {
                 display_name: "Unit Test Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "unit-test-provider".to_string(),
@@ -11704,6 +11758,7 @@ mod tests {
                 display_name: "Old Model".to_string(),
                 created_at: Some(two_years_ago),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test".to_string(),
@@ -11717,6 +11772,7 @@ mod tests {
                 display_name: "New Model".to_string(),
                 created_at: Some(recent),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test".to_string(),
@@ -11772,6 +11828,7 @@ mod tests {
                 display_name: "Old Model".to_string(),
                 created_at: Some(two_years_ago),
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test".to_string(),
@@ -11857,6 +11914,7 @@ mod tests {
                 display_name: "GPT 5.2 Codex".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("gpt-5.2-codex"),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11870,6 +11928,7 @@ mod tests {
                 display_name: "GPT 5".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::infer("gpt-5"),
             },
             Arc::new(StaticProvider {
                 name: "openai".to_string(),
@@ -11930,6 +11989,7 @@ mod tests {
                 display_name: "Test Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StaticProvider {
                 name: "test-provider".to_string(),
@@ -12401,6 +12461,7 @@ mod tests {
                 display_name: "Auto Compact Test".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(AutoCompactRegressionProvider {
                 context_window: 100,
@@ -12639,6 +12700,7 @@ mod tests {
                 display_name: "Abort Then Continue".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             provider.clone(),
         );
@@ -12724,6 +12786,7 @@ mod tests {
                 display_name: "Streaming Text Tool".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(StreamingTextToolProvider),
         );
@@ -12944,6 +13007,7 @@ mod tests {
                 display_name: "Slow Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(SlowStartProvider {
                 name: "local".to_string(),
@@ -12980,6 +13044,7 @@ mod tests {
                 display_name: "Stuck Model".to_string(),
                 created_at: None,
                 recommended: false,
+                capabilities: moltis_providers::ModelCapabilities::default(),
             },
             Arc::new(SlowStartProvider {
                 name: "local".to_string(),
