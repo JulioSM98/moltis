@@ -1,7 +1,7 @@
-//! Live integration tests for the Google Gemini provider.
+//! Live integration tests for the Z.AI (Zhipu) provider.
 //!
-//! Requires `GEMINI_API_KEY`. Run with:
-//!   cargo test --test gemini_integration -- --ignored
+//! Requires `Z_API_KEY`. Run with:
+//!   cargo test --test zai_integration -- --ignored
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -14,24 +14,27 @@ use {
     secrecy::Secret,
 };
 
-const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-/// Use Flash Lite preview — cheapest available Gemini model.
-const TEST_MODEL: &str = "gemini-3.1-flash-lite-preview";
+const BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+const TEST_MODEL: &str = "glm-4.5-flash";
 
 const KNOWN_MODELS: &[&str] = &[
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-flash-preview",
-    "gemini-2.5-flash-preview-05-20",
-    "gemini-2.5-pro-preview-05-06",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
+    "glm-5",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-4.7-flashx",
+    "glm-4.6",
+    "glm-4.6v",
+    "glm-4.6v-flash",
+    "glm-4.5",
+    "glm-4.5-air",
+    "glm-4.5-airx",
+    "glm-4.5-flash",
+    "glm-4.5v",
+    "glm-4-32b-0414-128k",
 ];
 
 fn api_key() -> Secret<String> {
-    Secret::new(
-        std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set for integration tests"),
-    )
+    Secret::new(std::env::var("Z_API_KEY").expect("Z_API_KEY must be set for integration tests"))
 }
 
 fn make_provider(model: &str) -> OpenAiProvider {
@@ -39,7 +42,7 @@ fn make_provider(model: &str) -> OpenAiProvider {
         api_key(),
         model.to_string(),
         BASE_URL.to_string(),
-        "gemini".to_string(),
+        "zai".to_string(),
     )
 }
 
@@ -63,7 +66,7 @@ fn weather_tool() -> serde_json::Value {
 #[ignore]
 async fn system_prompt_is_received_non_streaming() {
     let p = make_provider(TEST_MODEL);
-    let keyword = "PLANTAIN";
+    let keyword = "LOQUAT";
     let messages = vec![
         ChatMessage::system(format!(
             "You MUST include the exact word \"{keyword}\" in every response, no matter what."
@@ -82,7 +85,7 @@ async fn system_prompt_is_received_non_streaming() {
 #[ignore]
 async fn system_prompt_is_received_streaming() {
     let p = make_provider(TEST_MODEL);
-    let keyword = "QUINCE";
+    let keyword = "MULBERRY";
     let messages = vec![
         ChatMessage::system(format!(
             "You MUST include the exact word \"{keyword}\" in every response, no matter what."
@@ -179,10 +182,7 @@ async fn multi_turn_tool_use() {
         .expect("first turn");
     assert!(!r.tool_calls.is_empty(), "should call tool");
     let tc = &r.tool_calls[0];
-    // Gemini requires `thought_signature` on replayed tool calls.
-    // ChatMessage doesn't carry provider-specific metadata; the gateway
-    // preserves raw JSON across turns in production.
-    match p
+    let r2 = p
         .complete(
             &[
                 ChatMessage::user("Weather in London? Use get_weather."),
@@ -196,16 +196,8 @@ async fn multi_turn_tool_use() {
             &tools,
         )
         .await
-    {
-        Ok(r2) => assert!(r2.text.is_some(), "should have text after tool result"),
-        Err(e) if e.to_string().contains("thought_signature") => {
-            eprintln!(
-                "multi-turn 400 (expected): Gemini requires thought_signature \
-                 from step 1 but ChatMessage doesn't carry it"
-            );
-        },
-        Err(e) => panic!("unexpected error in multi-turn: {e}"),
-    }
+        .expect("second turn");
+    assert!(r2.text.is_some(), "should have text after tool result");
 }
 
 // ── Probe & streaming ────────────────────────────────────────────────────────
@@ -253,21 +245,21 @@ async fn catalog_models_are_live() {
             Err(e) => dead.push((m, e.to_string())),
         }
     }
-    eprintln!("\n=== Gemini Model Catalog Health ===");
+    eprintln!("\n=== Z.AI Model Catalog Health ===");
     for m in &alive {
         eprintln!("  OK {m}");
     }
     for (m, e) in &dead {
         eprintln!("  DEAD {m}: {e}");
     }
-    eprintln!("==================================\n");
+    eprintln!("================================\n");
     assert!(alive.contains(&TEST_MODEL), "{TEST_MODEL} should be live");
 }
 
 #[tokio::test]
 #[ignore]
 async fn detect_new_models_via_api() {
-    let key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
+    let key = std::env::var("Z_API_KEY").expect("Z_API_KEY must be set");
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("{BASE_URL}/models"))
@@ -276,7 +268,7 @@ async fn detect_new_models_via_api() {
         .await
         .expect("HTTP request should succeed");
     if !resp.status().is_success() {
-        eprintln!("Gemini /models returned {}", resp.status());
+        eprintln!("Z.AI /models returned {}", resp.status());
         return;
     }
     let body: serde_json::Value = resp.json().await.expect("valid JSON");
@@ -286,32 +278,24 @@ async fn detect_new_models_via_api() {
         .iter()
         .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
         .collect();
-    eprintln!("\n=== Gemini /models API ({} models) ===", api_ids.len());
-    // Gemini API returns IDs with "models/" prefix; strip it for comparison.
-    let stripped_ids: Vec<String> = api_ids
-        .iter()
-        .map(|id| id.strip_prefix("models/").unwrap_or(id).to_string())
-        .collect();
-    let stripped_refs: Vec<&str> = stripped_ids.iter().map(String::as_str).collect();
-
+    eprintln!("\n=== Z.AI /models API ({} models) ===", api_ids.len());
     for &k in KNOWN_MODELS {
-        let marker = if stripped_refs.contains(&k) {
+        let marker = if api_ids.contains(&k) {
             "OK"
         } else {
             "MISSING"
         };
         eprintln!("  {marker} {k}");
     }
-
-    let new: Vec<&String> = stripped_ids
+    let new: Vec<&&str> = api_ids
         .iter()
-        .filter(|id| id.starts_with("gemini-") && !known.contains(id.as_str()))
+        .filter(|id| id.starts_with("glm-") && !known.contains(**id))
         .collect();
     if !new.is_empty() {
-        eprintln!("New Gemini models ({}):", new.len());
+        eprintln!("New GLM models ({}):", new.len());
         for id in &new {
             eprintln!("  NEW -> {id}");
         }
     }
-    eprintln!("====================================\n");
+    eprintln!("===================================\n");
 }
