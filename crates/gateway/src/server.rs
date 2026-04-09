@@ -4072,12 +4072,6 @@ fn builtin_hook_metadata() -> Vec<(
     use moltis_common::hooks::HookEvent;
     vec![
         (
-            "boot-md",
-            "Reads BOOT.md from the workspace on startup and injects its content as the initial user message to the agent.",
-            vec![HookEvent::GatewayStart],
-            "crates/plugins/src/bundled/boot_md.rs",
-        ),
-        (
             "command-logger",
             "Logs all slash-command invocations to a JSONL audit file at ~/.moltis/logs/commands.log.",
             vec![HookEvent::Command],
@@ -4508,9 +4502,9 @@ const DEFAULT_BOOT_MD: &str = r#"<!--
 BOOT.md is optional startup context.
 
 How Moltis uses this file:
-- Read on every GatewayStart by the built-in boot-md hook.
+- Loaded per session and injected into the system prompt.
 - Missing/empty/comment-only file = no startup injection.
-- Non-empty content = injected as startup user message context.
+- Agent-specific overrides: place in agents/<id>/BOOT.md.
 
 Recommended usage:
 - Keep it short and explicit.
@@ -4568,10 +4562,7 @@ pub(crate) async fn discover_and_build_hooks(
     Vec<crate::state::DiscoveredHookInfo>,
 ) {
     use moltis_plugins::{
-        bundled::{
-            boot_md::BootMdHook, command_logger::CommandLoggerHook,
-            session_memory::SessionMemoryHook,
-        },
+        bundled::{command_logger::CommandLoggerHook, session_memory::SessionMemoryHook},
         hook_discovery::{FsHookDiscoverer, HookDiscoverer, HookSource},
         hook_eligibility::check_hook_eligibility,
         shell_hook::ShellHookHandler,
@@ -4649,10 +4640,6 @@ pub(crate) async fn discover_and_build_hooks(
     // ── Built-in hooks (compiled Rust, always active) ──────────────────
     {
         let data = moltis_config::data_dir();
-
-        // boot-md: inject BOOT.md content on GatewayStart.
-        let boot = BootMdHook::new(data.clone());
-        registry.register(Arc::new(boot));
 
         // command-logger: append JSONL entries for every slash command.
         let log_path =
