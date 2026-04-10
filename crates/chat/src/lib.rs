@@ -1096,11 +1096,17 @@ fn resolve_channel_runtime_context(
         };
     }
 
-    if let Some(binding_json) = session_entry.and_then(|entry| entry.channel_binding.as_deref())
-        && let Ok(binding) =
-            serde_json::from_str::<moltis_channels::ChannelReplyTarget>(binding_json)
-    {
-        return (&binding).into();
+    if let Some(binding_json) = session_entry.and_then(|entry| entry.channel_binding.as_deref()) {
+        match serde_json::from_str::<moltis_channels::ChannelReplyTarget>(binding_json) {
+            Ok(binding) => return (&binding).into(),
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    session = %session_key,
+                    "failed to parse channel_binding JSON; falling back to web"
+                );
+            },
+        }
     }
 
     moltis_common::hooks::ChannelBinding {
@@ -9423,6 +9429,17 @@ mod tests {
         assert_eq!(context.channel_type, None);
         assert_eq!(context.account_id, None);
         assert_eq!(context.chat_id, None);
+    }
+
+    #[test]
+    fn resolve_channel_runtime_context_falls_back_to_web_when_binding_is_invalid() {
+        let entry = make_session_entry_with_binding(Some("{not-json".to_string()));
+        let context = resolve_channel_runtime_context("telegram:bot-main:123456", Some(&entry));
+        assert_eq!(context.surface.as_deref(), Some("web"));
+        assert_eq!(context.session_kind.as_deref(), Some("web"));
+        assert!(context.channel_type.is_none());
+        assert!(context.account_id.is_none());
+        assert!(context.chat_id.is_none());
     }
 
     #[test]
