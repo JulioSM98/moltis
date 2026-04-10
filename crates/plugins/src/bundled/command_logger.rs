@@ -152,6 +152,7 @@ mod tests {
 
         let payload = HookPayload::SessionStart {
             session_key: "test".into(),
+            channel: None,
         };
         hook.handle(HookEvent::Command, &payload).await.unwrap();
         // File shouldn't even be created

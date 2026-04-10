@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use {async_trait::async_trait, moltis_common::types::ReplyPayload, tokio::sync::mpsc};
+use {
+    async_trait::async_trait,
+    moltis_common::{hooks::ChannelBinding, types::ReplyPayload},
+    tokio::sync::mpsc,
+};
 
 use crate::{Error, Result, config_view::ChannelConfigView};
 
@@ -42,6 +46,23 @@ impl ChannelType {
             Self::Discord => "Discord",
             Self::Slack => "Slack",
             Self::Matrix => "Matrix",
+        }
+    }
+
+    /// Best-effort chat classification for hook and prompt context.
+    #[must_use]
+    pub fn classify_chat(&self, chat_id: &str) -> Option<String> {
+        match self {
+            Self::Telegram => {
+                if chat_id.starts_with("-100") {
+                    Some("channel_or_supergroup".to_string())
+                } else if chat_id.starts_with('-') {
+                    Some("group".to_string())
+                } else {
+                    Some("private".to_string())
+                }
+            },
+            _ => None,
         }
     }
 
@@ -499,6 +520,21 @@ impl ChannelReplyTarget {
         match &self.thread_id {
             Some(tid) => std::borrow::Cow::Owned(format!("{}:{}", self.chat_id, tid)),
             None => std::borrow::Cow::Borrowed(&self.chat_id),
+        }
+    }
+}
+
+impl From<&ChannelReplyTarget> for ChannelBinding {
+    fn from(target: &ChannelReplyTarget) -> Self {
+        let channel_type = target.channel_type.as_str().to_string();
+        Self {
+            surface: Some(channel_type.clone()),
+            session_kind: Some("channel".to_string()),
+            channel_type: Some(channel_type),
+            account_id: Some(target.account_id.clone()),
+            chat_id: Some(target.chat_id.clone()),
+            chat_type: target.channel_type.classify_chat(&target.chat_id),
+            sender_id: None,
         }
     }
 }
@@ -1176,5 +1212,42 @@ mod tests {
         assert_eq!(json, "\"socket_mode\"");
         let json = serde_json::to_string(&InboundMode::Webhook).unwrap();
         assert_eq!(json, "\"webhook\"");
+    }
+
+    #[test]
+    fn telegram_chat_classification_matches_chat_id_shape() {
+        assert_eq!(
+            ChannelType::Telegram.classify_chat("-100123").as_deref(),
+            Some("channel_or_supergroup")
+        );
+        assert_eq!(
+            ChannelType::Telegram.classify_chat("-42").as_deref(),
+            Some("group")
+        );
+        assert_eq!(
+            ChannelType::Telegram.classify_chat("123").as_deref(),
+            Some("private")
+        );
+        assert!(ChannelType::Discord.classify_chat("123").is_none());
+    }
+
+    #[test]
+    fn channel_reply_target_converts_to_hook_channel_binding() {
+        let target = ChannelReplyTarget {
+            channel_type: ChannelType::Telegram,
+            account_id: "bot1".into(),
+            chat_id: "-100999".into(),
+            message_id: Some("7".into()),
+            thread_id: Some("42".into()),
+        };
+
+        let binding: ChannelBinding = (&target).into();
+        assert_eq!(binding.surface.as_deref(), Some("telegram"));
+        assert_eq!(binding.session_kind.as_deref(), Some("channel"));
+        assert_eq!(binding.channel_type.as_deref(), Some("telegram"));
+        assert_eq!(binding.account_id.as_deref(), Some("bot1"));
+        assert_eq!(binding.chat_id.as_deref(), Some("-100999"));
+        assert_eq!(binding.chat_type.as_deref(), Some("channel_or_supergroup"));
+        assert!(binding.sender_id.is_none());
     }
 }

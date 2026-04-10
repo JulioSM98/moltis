@@ -103,6 +103,41 @@ Fires after the LLM response is received but before tool calls execute. For stre
 | `output_tokens` | number | Tokens in the response |
 | `iteration` | number | 1-based loop iteration |
 
+## Channel Provenance
+
+`BeforeToolCall`, `SessionStart`, `MessageReceived`, and `ToolResultPersist` can include channel provenance in a `channel` or `channel_binding` object. The fields are optional so hooks keep working for sessions that do not originate from a channel integration.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `surface` | string/null | Runtime surface, for example `telegram`, `discord`, `web`, `cron`, `heartbeat` |
+| `session_kind` | string/null | High-level source kind, usually `channel`, `web`, or `cron` |
+| `channel_type` | string/null | Channel plugin type when channel-bound |
+| `account_id` | string/null | Channel account identifier |
+| `chat_id` | string/null | Channel chat, room, or peer identifier |
+| `chat_type` | string/null | Best-effort chat classification, currently most useful for Telegram |
+| `sender_id` | string/null | Reserved for future sender provenance, currently omitted |
+
+Example `BeforeToolCall` payload excerpt:
+
+```json
+{
+  "event": "BeforeToolCall",
+  "session_key": "telegram:bot-main:-100123",
+  "tool_name": "exec",
+  "arguments": {
+    "command": "pwd"
+  },
+  "channel": {
+    "surface": "telegram",
+    "session_kind": "channel",
+    "channel_type": "telegram",
+    "account_id": "bot-main",
+    "chat_id": "-100123",
+    "chat_type": "channel_or_supergroup"
+  }
+}
+```
+
 ### Example: Block Suspicious Tool Calls
 
 ```bash

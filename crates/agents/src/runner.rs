@@ -8,7 +8,7 @@ use {
 #[cfg(feature = "metrics")]
 use moltis_metrics::{counter, histogram, labels, llm as llm_metrics};
 
-use moltis_common::hooks::{HookAction, HookPayload, HookRegistry};
+use moltis_common::hooks::{ChannelBinding, HookAction, HookPayload, HookRegistry};
 
 use crate::{
     model::{
@@ -877,6 +877,10 @@ pub async fn run_agent_loop_with_context(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let channel_for_hooks: Option<ChannelBinding> = tool_context
+        .as_ref()
+        .and_then(|ctx| ctx.get("_channel"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     let mut iterations = 0;
     let mut total_tool_calls = 0;
@@ -1256,6 +1260,7 @@ pub async fn run_agent_loop_with_context(
                 // Dispatch BeforeToolCall hook — may block or modify arguments.
                 let hook_registry = hook_registry.clone();
                 let session_key = session_key_for_hooks.clone();
+                let channel_for_hooks = channel_for_hooks.clone();
                 let tc_name = sanitized.to_string();
                 let _tc_id = tc.id.clone();
 
@@ -1273,6 +1278,7 @@ pub async fn run_agent_loop_with_context(
                             session_key: session_key.clone(),
                             tool_name: tc_name.clone(),
                             arguments: args.clone(),
+                            channel: channel_for_hooks.clone(),
                         };
                         match hooks.dispatch(&payload).await {
                             Ok(HookAction::Block(reason)) => {
@@ -1469,6 +1475,10 @@ pub async fn run_agent_loop_streaming(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let channel_for_hooks: Option<ChannelBinding> = tool_context
+        .as_ref()
+        .and_then(|ctx| ctx.get("_channel"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     let mut iterations = 0;
     let mut total_tool_calls = 0;
@@ -1977,6 +1987,7 @@ pub async fn run_agent_loop_streaming(
 
                 let hook_registry = hook_registry.clone();
                 let session_key = session_key_for_hooks.clone();
+                let channel_for_hooks = channel_for_hooks.clone();
                 let tc_name = sanitized.to_string();
 
                 if let Some(ref ctx) = tool_context
@@ -1993,6 +2004,7 @@ pub async fn run_agent_loop_streaming(
                             session_key: session_key.clone(),
                             tool_name: tc_name.clone(),
                             arguments: args.clone(),
+                            channel: channel_for_hooks.clone(),
                         };
                         match hooks.dispatch(&payload).await {
                             Ok(HookAction::Block(reason)) => {
@@ -2132,9 +2144,35 @@ mod tests {
             tool_parsing::parse_tool_call_from_text,
         },
         async_trait::async_trait,
+        moltis_common::hooks::{HookEvent, HookHandler},
         std::pin::Pin,
         tokio_stream::Stream,
     };
+
+    struct RecordingHook {
+        payloads: Arc<std::sync::Mutex<Vec<HookPayload>>>,
+    }
+
+    #[async_trait]
+    impl HookHandler for RecordingHook {
+        fn name(&self) -> &str {
+            "recording-hook"
+        }
+
+        fn events(&self) -> &[HookEvent] {
+            static EVENTS: [HookEvent; 1] = [HookEvent::BeforeToolCall];
+            &EVENTS
+        }
+
+        async fn handle(
+            &self,
+            _event: HookEvent,
+            payload: &HookPayload,
+        ) -> moltis_common::error::Result<HookAction> {
+            self.payloads.lock().unwrap().push(payload.clone());
+            Ok(HookAction::Continue)
+        }
+    }
 
     // ── parse_tool_call_from_text tests (delegates to tool_parsing) ──
 
@@ -5530,6 +5568,63 @@ mod tests {
         assert_eq!(name, "process");
         assert_eq!(args["action"], "start");
         assert_eq!(args["command"], "pwd");
+    }
+
+    #[tokio::test]
+    async fn before_tool_call_hook_receives_channel_binding_from_tool_context() {
+        let provider = Arc::new(NativeTextFunctionStreamProvider {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(TestProcessTool));
+
+        let payloads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut hook_registry = HookRegistry::new();
+        hook_registry.register(Arc::new(RecordingHook {
+            payloads: Arc::clone(&payloads),
+        }));
+
+        let user_content = UserContent::Text("execute pwd".to_string());
+        let result = run_agent_loop_streaming(
+            provider,
+            &tools,
+            "You are a test bot.",
+            &user_content,
+            None,
+            None,
+            Some(serde_json::json!({
+                "_session_key": "telegram:bot-main:-100123",
+                "_channel": {
+                    "surface": "telegram",
+                    "session_kind": "channel",
+                    "channel_type": "telegram",
+                    "account_id": "bot-main",
+                    "chat_id": "-100123",
+                    "chat_type": "channel_or_supergroup"
+                }
+            })),
+            Some(Arc::new(hook_registry)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tool_calls_made, 1);
+
+        let payloads = payloads.lock().unwrap();
+        let payload = payloads
+            .iter()
+            .find(|payload| matches!(payload, HookPayload::BeforeToolCall { .. }))
+            .unwrap_or_else(|| panic!("missing BeforeToolCall payload"));
+        match payload {
+            HookPayload::BeforeToolCall { channel, .. } => {
+                let channel = channel.clone().unwrap_or_else(|| panic!("missing channel"));
+                assert_eq!(channel.channel_type.as_deref(), Some("telegram"));
+                assert_eq!(channel.account_id.as_deref(), Some("bot-main"));
+                assert_eq!(channel.chat_id.as_deref(), Some("-100123"));
+                assert_eq!(channel.chat_type.as_deref(), Some("channel_or_supergroup"));
+            },
+            other => panic!("unexpected payload: {other:?}"),
+        }
     }
 
     /// Streaming provider that returns plain text only (no tool calls) on
