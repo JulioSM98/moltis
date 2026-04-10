@@ -216,6 +216,7 @@ fn apply_message_received_rewrite(
             let rewritten_blocks = rewrite_multimodal_text_blocks(blocks, new_text);
             match serde_json::to_value(&rewritten_blocks) {
                 Ok(content_value) => {
+                    *blocks = rewritten_blocks;
                     if let Some(params_obj) = params.as_object_mut() {
                         params_obj.insert("content".to_string(), content_value);
                         params_obj.remove("text");
@@ -226,7 +227,6 @@ fn apply_message_received_rewrite(
                     warn!(error = %e, "failed to serialize rewritten multimodal content");
                 },
             }
-            *blocks = rewritten_blocks;
         },
     }
 }
