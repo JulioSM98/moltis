@@ -333,5 +333,8 @@ mod tests {
 
         // Interactive: Discord supports interactive messages
         assert!(desc.capabilities.supports_interactive);
+
+        // Voice ingest: Discord now handles inbound voice attachments.
+        assert!(desc.capabilities.supports_voice_ingest);
     }
 }
